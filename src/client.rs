@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures_core::Stream;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::Method;
 use reqwest::StatusCode;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::debug;
@@ -77,10 +78,13 @@ struct RequestSpec {
 
 impl RequestSpec {
     /// 构造基础请求描述；`payload_hash` 默认为空请求体的哈希。
-    fn new(method: &str, config: &S3Config, key: Option<&str>) -> Self {
+    ///
+    /// `method` 取 [`reqwest::Method`] 常量而非字符串：字符串需要解析，解析失败时
+    /// 无论回退到哪个方法都会让「方法写错了」这一事实悄无声息地溜过去。
+    fn new(method: Method, config: &S3Config, key: Option<&str>) -> Self {
         let parts = config.endpoint_parts(key);
         Self {
-            method: request_method(method),
+            method,
             url: parts.url,
             host: parts.host,
             canonical_uri: parts.canonical_uri,
@@ -104,11 +108,6 @@ impl RequestSpec {
         self.payload_hash = payload_hash.into();
         self
     }
-}
-
-/// 内部方法名到 [`reqwest::Method`] 的映射（所有调用点都传入合法常量）。
-fn request_method(method: &str) -> reqwest::Method {
-    reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET)
 }
 
 /// 共享状态：HTTP 客户端、配置、重试策略与背压信号量。
@@ -185,7 +184,7 @@ impl S3Client {
     ///   权限；在只授予对象级权限的部署中这是正常状态）；
     /// - 其它状态码（如 `404` 桶不存在）或传输失败 -> `Err`。
     pub async fn ping(&self) -> S3Result<()> {
-        let spec = RequestSpec::new("HEAD", &self.inner.config, None);
+        let spec = RequestSpec::new(Method::HEAD, &self.inner.config, None);
         let response = self.inner.send(&spec, None).await?;
         let status = response.status();
         if is_reachable_without_permission(status) {
@@ -226,7 +225,7 @@ impl S3Client {
         options: &UploadOptions,
     ) -> S3Result<ObjectMeta> {
         let size = u64::try_from(body.len()).unwrap_or(u64::MAX);
-        let spec = RequestSpec::new("PUT", &self.inner.config, Some(key.as_str()))
+        let spec = RequestSpec::new(Method::PUT, &self.inner.config, Some(key.as_str()))
             .with_headers(options.additional_headers()?)
             .with_payload_hash(sign::sha256_hex(&body));
         let response = retry::with_retry(&self.inner.retry, "put_object", || {
@@ -263,7 +262,7 @@ impl S3Client {
         content_length: Option<u64>,
     ) -> S3Result<ObjectMeta> {
         self.reject_unsigned_payload_over_http()?;
-        let spec = RequestSpec::new("PUT", &self.inner.config, Some(key.as_str()))
+        let spec = RequestSpec::new(Method::PUT, &self.inner.config, Some(key.as_str()))
             .with_headers(options.additional_headers()?)
             .with_payload_hash(UNSIGNED_PAYLOAD);
         let _permit = self.inner.acquire().await?;
@@ -308,8 +307,8 @@ impl S3Client {
             Some((start, end)) => vec![("range".to_owned(), format!("bytes={start}-{end}"))],
             None => Vec::new(),
         };
-        let spec =
-            RequestSpec::new("GET", &self.inner.config, Some(key.as_str())).with_headers(headers);
+        let spec = RequestSpec::new(Method::GET, &self.inner.config, Some(key.as_str()))
+            .with_headers(headers);
         // 许可在重试闭包内逐次获取/释放；成功后交由响应体流持有。
         let (permit, response) = retry::with_retry(&self.inner.retry, "get_object", || {
             let spec = &spec;
@@ -322,7 +321,7 @@ impl S3Client {
 
     /// 下载对象并读完全部字节。
     pub async fn get_object_bytes(&self, key: &ObjectKey) -> S3Result<Bytes> {
-        let spec = RequestSpec::new("GET", &self.inner.config, Some(key.as_str()));
+        let spec = RequestSpec::new(Method::GET, &self.inner.config, Some(key.as_str()));
         let response = retry::with_retry(&self.inner.retry, "get_object_bytes", || {
             let spec = &spec;
             async move { self.inner.send_checked(spec, None).await }
@@ -354,7 +353,7 @@ impl S3Client {
 
     /// 删除单个对象（幂等，可安全重试）。
     pub async fn delete_object(&self, key: &ObjectKey) -> S3Result<()> {
-        let spec = RequestSpec::new("DELETE", &self.inner.config, Some(key.as_str()));
+        let spec = RequestSpec::new(Method::DELETE, &self.inner.config, Some(key.as_str()));
         retry::with_retry(&self.inner.retry, "delete_object", || {
             let spec = &spec;
             async move { self.inner.send_checked(spec, None).await }
@@ -365,7 +364,7 @@ impl S3Client {
 
     /// 读取对象元数据（`HEAD`，不下载内容）。
     pub async fn head_object(&self, key: &ObjectKey) -> S3Result<ObjectMeta> {
-        let spec = RequestSpec::new("HEAD", &self.inner.config, Some(key.as_str()));
+        let spec = RequestSpec::new(Method::HEAD, &self.inner.config, Some(key.as_str()));
         let response = retry::with_retry(&self.inner.retry, "head_object", || {
             let spec = &spec;
             async move { self.inner.send_checked(spec, None).await }
@@ -404,7 +403,7 @@ impl S3Client {
                 max_keys.min(MAX_LIST_KEYS).to_string(),
             ));
         }
-        let spec = RequestSpec::new("GET", &self.inner.config, None).with_query(query);
+        let spec = RequestSpec::new(Method::GET, &self.inner.config, None).with_query(query);
         let response = retry::with_retry(&self.inner.retry, "list_objects_v2", || {
             let spec = &spec;
             async move { self.inner.send_checked(spec, None).await }
@@ -791,7 +790,7 @@ mod tests {
             ..config("examplebucket")
         };
         let key = ObjectKey::new("dir/a b.txt").expect("合法键");
-        let spec = RequestSpec::new("PUT", &config, Some(key.as_str()))
+        let spec = RequestSpec::new(Method::PUT, &config, Some(key.as_str()))
             .with_headers(vec![("content-type".to_owned(), "text/plain".to_owned())])
             .with_payload_hash(sign::sha256_hex(b"hello"));
         let request = build(&spec, &config, Some(Bytes::from_static(b"hello")));
@@ -825,7 +824,7 @@ mod tests {
     fn request_is_signed_for_virtual_hosted_style() {
         let config = config("examplebucket");
         let key = ObjectKey::new("dir/a b.txt").expect("合法键");
-        let spec = RequestSpec::new("GET", &config, Some(key.as_str()));
+        let spec = RequestSpec::new(Method::GET, &config, Some(key.as_str()));
         let request = build(&spec, &config, None);
         assert_eq!(
             request.url().as_str(),
@@ -851,7 +850,7 @@ mod tests {
             session_token: Some("token-value".to_owned()),
             ..config("examplebucket")
         };
-        let spec = RequestSpec::new("GET", &config, None);
+        let spec = RequestSpec::new(Method::GET, &config, None);
         let request = build(&spec, &config, None);
         assert_eq!(
             request
@@ -869,7 +868,7 @@ mod tests {
     #[test]
     fn query_parameters_are_encoded_and_sorted_in_url() {
         let config = config("examplebucket");
-        let spec = RequestSpec::new("GET", &config, None).with_query(vec![
+        let spec = RequestSpec::new(Method::GET, &config, None).with_query(vec![
             ("list-type".to_owned(), "2".to_owned()),
             ("encoding-type".to_owned(), "url".to_owned()),
             ("prefix".to_owned(), "a b/".to_owned()),
