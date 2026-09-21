@@ -1,9 +1,8 @@
 # s3x
 
-[![Crates.io](https://img.shields.io/crates/v/s3x.svg)](https://crates.io/crates/s3x)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-`s3x` 是一个可独立发布的 **AWS S3 / S3 兼容对象存储适配器**，基于 `reqwest`
+`s3x` 是一个零内部耦合的 **AWS S3 / S3 兼容对象存储适配器**，基于 `reqwest`
 （rustls）与**手写的 AWS Signature Version 4** 实现，**不引入 `aws-sdk-s3`**
 （因此也没有 smithy / hyper 版本联动负担）。
 
@@ -22,8 +21,11 @@
 
 ## 安装
 
-```bash
-cargo add s3x
+本 crate **不发布到 crates.io**，通过 git 依赖引入：
+
+```toml
+[dependencies]
+s3x = { git = "https://github.com/bytechainx/s3x" }
 ```
 
 ## 最小可运行示例

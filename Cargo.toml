@@ -7,7 +7,7 @@ description = "Async AWS S3 and S3-compatible object storage adapter with hand-r
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bytechainx/s3x"
 homepage = "https://github.com/bytechainx/s3x"
-documentation = "https://docs.rs/s3x"
+documentation = "https://github.com/bytechainx/s3x#readme"
 readme = "README.md"
 keywords = ["s3", "object-storage", "aws", "sigv4", "async"]
 categories = ["network-programming", "filesystem"]
@@ -34,7 +34,3 @@ thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
