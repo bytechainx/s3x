@@ -18,6 +18,7 @@
 
 use std::fmt;
 
+use hmac::digest::Key;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
@@ -44,19 +45,45 @@ pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 
+/// SHA-256 的分组大小（字节），也是 HMAC 密钥规整后的目标长度。
+const SHA256_BLOCK_BYTES: usize = 64;
+
+/// 按 RFC 2104 §2 把 HMAC 密钥规整为恰好一个分组。
+///
+/// - 密钥长于分组：先取 `SHA-256(key)`，再左补零；
+/// - 否则：直接左补零。
+///
+/// 显式做这一步是为了让后续构造可以走**不可失败**的 [`Mac::new`]（取定长密钥），
+/// 从而在签名路径上彻底消除 `Result` 与 `panic` 两种分支。
+///
+/// 该规则与 `hmac` crate 内部的 `get_der_key` 一致，并由差分测试
+/// `hmac_sha256_matches_hmac_crate_across_key_lengths` 逐字节验证。
+fn derive_key_block(key: &[u8]) -> [u8; SHA256_BLOCK_BYTES] {
+    let mut block = [0_u8; SHA256_BLOCK_BYTES];
+    if key.len() > SHA256_BLOCK_BYTES {
+        // SHA-256 的输出恒为 32 字节，短于 64 字节分组，故此切片不会越界。
+        let digest = Sha256::digest(key);
+        block[..digest.len()].copy_from_slice(&digest);
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    block
+}
+
 /// 计算 HMAC-SHA256。
 ///
-/// HMAC 允许任意长度密钥，因此 `new_from_slice` 不会失败；理论上不可达的失败
-/// 分支返回空串（生产代码禁止 `unwrap` / `panic`）。
+/// 密钥先按 RFC 2104 §2 规整为单个分组（见 [`derive_key_block`]），再以定长密钥
+/// 构造，因此本函数**不存在任何可能失败或 panic 的分支**。
+///
+/// 这与早先的实现形成对比：旧版在理论上不可达的失败路径上静默返回空 `Vec`，
+/// 而空密钥会产出一个**格式合法但内容错误**的签名，本地毫无提示、只在服务端
+/// 表现为一个难以定位的 `403`。现在既不需要静默回退，也不依赖不可达断言。
 #[must_use]
 pub fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
-    match <Hmac<Sha256> as Mac>::new_from_slice(key) {
-        Ok(mut mac) => {
-            mac.update(msg);
-            mac.finalize().into_bytes().to_vec()
-        }
-        Err(_) => Vec::new(),
-    }
+    let key_block: Key<Hmac<Sha256>> = derive_key_block(key).into();
+    let mut mac = <Hmac<Sha256> as Mac>::new(&key_block);
+    mac.update(msg);
+    mac.finalize().into_bytes().to_vec()
 }
 
 /// 派生 SigV4 签名密钥：
@@ -389,8 +416,74 @@ mod tests {
             hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
-        // 超过分组大小（64 字节）的密钥会先被哈希。
-        assert_eq!(hmac_sha256(&[0_u8; 200], b"msg").len(), 32);
+    }
+
+    /// RFC 4231 的权威向量，覆盖**密钥长度**的各个分支：空密钥、短于分组
+    /// （左补零）、恰等于分组（64 字节，不哈希）、超过分组（先哈希）。
+    ///
+    /// 这些向量是 [`derive_key_block`] 规整规则的锚点：任一处写错都会直接反映为
+    /// 签名不符。它们**不能**区分「静默返回空 `Vec`」的旧实现——旧实现的失败
+    /// 分支本就不可达，走的一直是正常路径；那一改动由本文件的设计（签名路径无
+    /// 任何失败分支）与下面的差分测试共同保证。
+    #[test]
+    fn hmac_sha256_matches_rfc4231_vectors_across_key_lengths() {
+        // 空密钥 + 空消息：仍必须是合法的 32 字节 HMAC，而不是任何形式的空值。
+        assert_eq!(
+            hex::encode(hmac_sha256(b"", b"")),
+            "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"
+        );
+        // 分组大小边界（SHA-256 分组为 64 字节）：64 字节不哈希，65 字节先哈希。
+        assert_eq!(
+            hex::encode(hmac_sha256(&[0_u8; 64], b"msg")),
+            "5f576a8d68fe4fb7eb823227246353c0870c3b0e878997341db1226b4bd88d61"
+        );
+        assert_eq!(
+            hex::encode(hmac_sha256(&[0_u8; 65], b"msg")),
+            "ef83f61dcfdce4d1c6c8d949d28f14f26e6e96c960f059b9f277410187986c26"
+        );
+        // RFC 4231 TC6：131 字节密钥（> 分组大小，必须先哈希）。
+        let long_key = [0xaa_u8; 131];
+        assert_eq!(
+            hex::encode(hmac_sha256(
+                &long_key,
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+        // RFC 4231 TC7：超长密钥 + 超长消息。
+        assert_eq!(
+            hex::encode(hmac_sha256(
+                &long_key,
+                b"This is a test using a larger than block-size key and a larger than \
+                  block-size data. The key needs to be hashed before being used by the \
+                  HMAC algorithm."
+            )),
+            "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2"
+        );
+    }
+
+    /// 差分测试：自实现的密钥规整必须与 `hmac` crate 的 `new_from_slice` 路径
+    /// 在全部密钥长度分支上逐字节一致。
+    ///
+    /// 这是「自行规整 + 不可失败构造」方案的**正确性依据**：`derive_key_block`
+    /// 一旦与 crate 内部规则出现偏差（例如长密钥少哈希一次、补零位置写错），
+    /// 本用例会立即失败，而不会退化成线上难以定位的签名错误。
+    ///
+    /// 参考实现只在本测试中使用；生产路径不含任何可失败分支。
+    #[test]
+    fn hmac_sha256_matches_hmac_crate_across_key_lengths() {
+        for len in [0, 1, 31, 32, 33, 63, 64, 65, 100, 131, 200, 1_000] {
+            let key = vec![0x5a_u8; len];
+            let msg = b"differential check";
+            let mut reference = <Hmac<Sha256> as Mac>::new_from_slice(&key)
+                .expect("HMAC 接受任意长度密钥，参考实现不会失败");
+            reference.update(msg);
+            assert_eq!(
+                hmac_sha256(&key, msg),
+                reference.finalize().into_bytes().to_vec(),
+                "密钥长度 {len} 的实现与 hmac crate 不一致"
+            );
+        }
     }
 
     #[test]
