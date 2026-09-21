@@ -6,12 +6,17 @@
 //!
 //! - 有效期被收敛到 `1..=`[`HARD_MAX_PRESIGN_EXPIRES_SECS`]（AWS 硬上限 7 天）；
 //! - 载荷使用 [`UNSIGNED_PAYLOAD`](crate::UNSIGNED_PAYLOAD) 占位（这是预签名
-//!   URL 的标准做法）；
+//!   URL 的标准做法）。因此 endpoint 为**明文 HTTP** 时默认返回
+//!   [`S3Error::Config`]——载荷不受签名保护，传输层也无完整性，且签名与
+//!   session token 会明文传输；确认可接受该降级时才用
+//!   [`S3Config::allow_unsigned_payload_over_http`](crate::S3Config::allow_unsigned_payload_over_http)
+//!   显式放行；
 //! - 签名时钟可由 [`PresignOptions::now`] 注入，便于确定性测试。
 
 use chrono::{DateTime, Utc};
 
 use crate::config::S3Config;
+use crate::error::{S3Error, S3Result};
 use crate::sign::{self, S3_SERVICE};
 use crate::types::ObjectKey;
 
@@ -72,24 +77,30 @@ impl PresignOptions {
 
 /// 生成 `GET` 预签名 URL（有效期上限 7 天）。
 ///
-/// 调用方应先通过 [`S3Config::validate`] 确认配置有效——本函数返回 `String`，
-/// 不做失败返回，配置非法时生成的 URL 只会被服务端拒绝。
-#[must_use]
-pub fn presign_get(config: &S3Config, key: &ObjectKey, expires_in_secs: u64) -> String {
+/// 仅做一项策略检查：endpoint 为明文 HTTP 且未显式放行时返回
+/// [`S3Error::Config`]（原因见 [`presign_url`]）。其余配置项**不**校验——bucket
+/// 与凭据等必填项请先用 [`S3Config::validate`] 确认，否则生成的 URL 只会被服务端拒绝。
+pub fn presign_get(config: &S3Config, key: &ObjectKey, expires_in_secs: u64) -> S3Result<String> {
     presign_url(config, key, &PresignOptions::get(expires_in_secs))
 }
 
 /// 生成 `PUT` 预签名 URL（有效期上限 7 天）。
 ///
-/// 同 [`presign_get`]：调用方应先行校验配置。
-#[must_use]
-pub fn presign_put(config: &S3Config, key: &ObjectKey, expires_in_secs: u64) -> String {
+/// 同 [`presign_get`]：只做明文 HTTP 策略检查，其余配置项不校验。
+pub fn presign_put(config: &S3Config, key: &ObjectKey, expires_in_secs: u64) -> S3Result<String> {
     presign_url(config, key, &PresignOptions::put(expires_in_secs))
 }
 
 /// 按 [`PresignOptions`] 生成预签名 URL。
-#[must_use]
-pub fn presign_url(config: &S3Config, key: &ObjectKey, options: &PresignOptions) -> String {
+///
+/// 预签名 URL 恒定使用 [`UNSIGNED_PAYLOAD`](crate::UNSIGNED_PAYLOAD)，因此 endpoint
+/// 为明文 HTTP 时返回 [`S3Error::Config`]（见 [`ensure_presign_allowed`]）。
+pub fn presign_url(
+    config: &S3Config,
+    key: &ObjectKey,
+    options: &PresignOptions,
+) -> S3Result<String> {
+    ensure_presign_allowed(config)?;
     let now = options.now.unwrap_or_else(Utc::now);
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let date = now.format("%Y%m%d").to_string();
@@ -129,11 +140,30 @@ pub fn presign_url(config: &S3Config, key: &ObjectKey, options: &PresignOptions)
         sign::signing_key(&config.access_key_secret, &date, &config.region, S3_SERVICE);
     let signature = hex::encode(sign::hmac_sha256(&signing_key, string_to_sign.as_bytes()));
 
-    format!(
+    Ok(format!(
         "{}?{}&X-Amz-Signature={signature}",
         target.url,
         sign::canonical_query_string(&query)
-    )
+    ))
+}
+
+/// 拒绝「明文 HTTP + 未签名载荷」这一组合（与
+/// [`S3Client::put_object_stream`](crate::S3Client::put_object_stream) 同一策略）。
+///
+/// 预签名 URL 恒定使用 [`UNSIGNED_PAYLOAD`](crate::UNSIGNED_PAYLOAD)：载荷不受签名
+/// 保护，明文 HTTP 下传输层也不提供完整性，请求体可被链路篡改而签名依然有效；
+/// 此外签名本体与 session token 也随 URL 明文传输。
+fn ensure_presign_allowed(config: &S3Config) -> S3Result<()> {
+    if config.endpoint_is_plain_http() && !config.allow_unsigned_payload_over_http {
+        return Err(S3Error::Config(
+            "明文 HTTP endpoint 不允许生成预签名 URL：载荷使用 UNSIGNED-PAYLOAD，\
+             签名不覆盖请求体，传输层亦无完整性保护，且签名与 session token 会明文传输。\
+             请改用 HTTPS，或设置 allow_unsigned_payload_over_http / \
+             FOUNDATIONX_S3X_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP 显式接受该降级"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -172,7 +202,7 @@ mod tests {
     #[test]
     fn presign_get_contains_all_parameters() {
         let key = ObjectKey::new("dir/test.txt").expect("合法键");
-        let url = presign_get(&config(), &key, 900);
+        let url = presign_get(&config(), &key, 900).expect("预签名必须成功");
         assert!(
             url.starts_with("https://examplebucket.s3.us-east-1.amazonaws.com/dir/test.txt?"),
             "{url}"
@@ -213,7 +243,7 @@ mod tests {
     fn presign_put_uses_put_method() {
         let key = ObjectKey::new("upload.bin").expect("合法键");
         let options = PresignOptions::put(120).at(fixed_now());
-        let url = presign_url(&config(), &key, &options);
+        let url = presign_url(&config(), &key, &options).expect("预签名必须成功");
         let params = query_pairs(&url);
         assert_eq!(params.get("X-Amz-Expires").map(String::as_str), Some("120"));
         assert_eq!(
@@ -226,35 +256,37 @@ mod tests {
         );
 
         // GET 与 PUT 的方法不同，签名必须不同。
-        let get_url = presign_url(&config(), &key, &PresignOptions::get(120).at(fixed_now()));
+        let get_url = presign_url(&config(), &key, &PresignOptions::get(120).at(fixed_now()))
+            .expect("预签名必须成功");
         assert_ne!(url, get_url);
     }
 
     #[test]
     fn expires_is_clamped_to_hard_bounds() {
         let key = ObjectKey::new("k").expect("合法键");
-        let lower = query_pairs(&presign_url(
-            &config(),
-            &key,
-            &PresignOptions::get(0).at(fixed_now()),
-        ));
+        let lower = query_pairs(
+            &presign_url(&config(), &key, &PresignOptions::get(0).at(fixed_now()))
+                .expect("预签名必须成功"),
+        );
         assert_eq!(lower.get("X-Amz-Expires").map(String::as_str), Some("1"));
 
-        let upper = query_pairs(&presign_url(
-            &config(),
-            &key,
-            &PresignOptions::get(u64::MAX).at(fixed_now()),
-        ));
+        let upper = query_pairs(
+            &presign_url(
+                &config(),
+                &key,
+                &PresignOptions::get(u64::MAX).at(fixed_now()),
+            )
+            .expect("预签名必须成功"),
+        );
         assert_eq!(
             upper.get("X-Amz-Expires").map(String::as_str),
             Some("604800")
         );
 
-        let normal = query_pairs(&presign_url(
-            &config(),
-            &key,
-            &PresignOptions::get(3_600).at(fixed_now()),
-        ));
+        let normal = query_pairs(
+            &presign_url(&config(), &key, &PresignOptions::get(3_600).at(fixed_now()))
+                .expect("预签名必须成功"),
+        );
         assert_eq!(
             normal.get("X-Amz-Expires").map(String::as_str),
             Some("3600")
@@ -265,11 +297,11 @@ mod tests {
     fn signature_is_reproducible_with_fixed_clock() {
         let key = ObjectKey::new("dir/test.txt").expect("合法键");
         let options = PresignOptions::get(900).at(fixed_now());
-        let first = presign_url(&config(), &key, &options);
-        let second = presign_url(&config(), &key, &options);
+        let first = presign_url(&config(), &key, &options).expect("预签名必须成功");
+        let second = presign_url(&config(), &key, &options).expect("预签名必须成功");
         assert_eq!(first, second);
         // `presign_get` 无固定时钟，但同一秒内两次调用必须一致。
-        let third = presign_get(&config(), &key, 900);
+        let third = presign_get(&config(), &key, 900).expect("预签名必须成功");
         assert!(third.contains("X-Amz-Signature="), "{third}");
     }
 
@@ -280,7 +312,8 @@ mod tests {
     #[test]
     fn presign_signature_matches_fixed_vector() {
         let key = ObjectKey::new("test.txt").expect("合法键");
-        let url = presign_url(&config(), &key, &PresignOptions::get(86400).at(fixed_now()));
+        let url = presign_url(&config(), &key, &PresignOptions::get(86400).at(fixed_now()))
+            .expect("预签名必须成功");
         assert_eq!(
             url,
             concat!(
@@ -304,13 +337,16 @@ mod tests {
         };
         let key = ObjectKey::new("test.txt").expect("合法键");
         let options = PresignOptions::get(60).at(fixed_now());
-        let url = presign_url(&with_token, &key, &options);
+        let url = presign_url(&with_token, &key, &options).expect("预签名必须成功");
         assert!(
             url.contains("X-Amz-Security-Token=session-token-value"),
             "{url}"
         );
         // 加入 token 后签名必然变化。
-        assert_ne!(url, presign_url(&base, &key, &options));
+        assert_ne!(
+            url,
+            presign_url(&base, &key, &options).expect("预签名必须成功")
+        );
     }
 
     #[test]
@@ -321,7 +357,7 @@ mod tests {
             ..config()
         };
         let key = ObjectKey::new("dir/a b.txt").expect("合法键");
-        let url = presign_get(&path_style, &key, 60);
+        let url = presign_get(&path_style, &key, 60).expect("预签名必须成功");
         assert!(
             url.starts_with("https://minio.example.com:9000/examplebucket/dir/a%20b.txt?"),
             "{url}"
@@ -331,7 +367,7 @@ mod tests {
             force_path_style: false,
             ..path_style.clone()
         };
-        let url = presign_get(&virtual_hosted, &key, 60);
+        let url = presign_get(&virtual_hosted, &key, 60).expect("预签名必须成功");
         assert!(
             url.starts_with("https://examplebucket.minio.example.com:9000/dir/a%20b.txt?"),
             "{url}"

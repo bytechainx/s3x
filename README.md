@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(&bytes[..], b"a,b\n1,2\n");
 
     // 预签名 URL（默认 1 小时，最长 7 天）
-    let url = presign_get(&client.config(), &key, 3600);
+    let url = presign_get(&client.config(), &key, 3600)?;
     println!("{url}");
 
     let health = client.health_check().await?;
@@ -101,7 +101,7 @@ client.ping().await?;
 | `UploadOptions` | 上传选项：`content_type` / `metadata`（`x-amz-meta-*`）/ `storage_class` |
 | `DownloadOptions` | 下载选项：`range: Option<(u64, u64)>` |
 | `ByteStream` / `byte_stream_from_bytes` | 下载字节流（`Result<Bytes, std::io::Error>`）与内存流构造 |
-| `presign_get` / `presign_put` / `presign_url` / `PresignOptions` | 预签名 URL（有效期自动收敛到 1..=604800 秒） |
+| `presign_get` / `presign_put` / `presign_url` / `PresignOptions` | 预签名 URL（返回 `S3Result<String>`；有效期自动收敛到 1..=604800 秒） |
 | `S3Error` / `S3Result` | 统一错误类型与 `Result` 别名，`is_retryable()` 区分瞬时/永久 |
 | `RetryConfig` / `with_retry` / `with_retry_deadline` / `backoff_delay` / `is_s3_retryable` | 重试策略（crate 内独立实现） |
 | `sign_request` / `canonical_request` / `canonical_headers` / `canonical_query_string` / `percent_encode` / `signing_key` / `hmac_sha256` / `sha256_hex` / `credential_scope` / `string_to_sign` / `authorization_header` | SigV4 原语（纯函数，便于复用与自测） |
@@ -167,8 +167,17 @@ virtual-hosted 形式为 `https://{bucket}.s3.{region}.amazonaws.com`。endpoint
 `X-Amz-Security-Token`），载荷用 `UNSIGNED-PAYLOAD` 占位。有效期会被收敛到
 `1..=604800` 秒（AWS 硬上限 7 天）。
 
-> 预签名函数返回 `String` 而非 `Result`：请在调用前用 `S3Config::validate()`
-> 确认配置有效，否则生成的链接只会被服务端拒绝。
+返回 `S3Result<String>`。唯一的失败来源是**明文 HTTP 策略**：预签名 URL 恒定使用
+`UNSIGNED-PAYLOAD`，endpoint 为 `http` 且未显式放行时返回 `S3Error::Config`（原因
+同「明文 HTTP 上禁止未签名载荷」）。**其余配置项不做校验**——bucket 与凭据等必填项
+请仍先用 `S3Config::validate()` 确认，否则生成的链接只会被服务端拒绝。
+
+```rust
+// 明文 HTTP 需要显式放行（默认拒绝）
+let mut config = config.clone();
+config.allow_unsigned_payload_over_http = true;
+let url = presign_get(&config, &key, 3600)?;
+```
 
 ## 配置项
 
@@ -216,7 +225,10 @@ fn build() -> Result<S3Config, Box<dyn std::error::Error>> {
   HTTP 下两个环节同时失守——请求体可被链路篡改而签名依然有效。因此 endpoint 为
   `http` 时该操作默认返回配置错误；确认可接受该降级（例如本地 MinIO 调试）时才用
   `allow_unsigned_payload_over_http` 显式放行。`put_object` / `get_object` 等操作的
-  载荷哈希是真实 SHA-256，不受此限制。
+  载荷哈希是真实 SHA-256，不受此限制。**预签名 URL 恒定使用 `UNSIGNED-PAYLOAD`，
+  因此同样默认拒绝**（`presign_get` / `presign_put` / `presign_url` 返回
+  `S3Result<String>`）——除载荷不受保护外，签名本体与 session token 也会随 URL
+  明文传输，而这类 URL 通常要交给浏览器或第三方。
   > 命名说明：AWS 将 `UNSIGNED-PAYLOAD` 列为 "unsigned payload option"，并**建议**
   > （而非要求）包含载荷校验和；本 crate 的默认拒绝是自身的**安全策略**，不是服务端
   > 的硬性约束。

@@ -5,7 +5,8 @@
 //! 在 endpoint 为 `http` 时默认返回 [`S3Error::Config`]，需显式放行。
 //!
 //! 判据两条：错误类型必须是 `Config`（而不是「请求发出后失败」），且服务端
-//! **没有收到任何请求**。全部离线运行。
+//! **没有收到任何请求**。预签名 URL（`presign_*`）恒定使用 `UNSIGNED-PAYLOAD`，
+//! 因此受同一策略约束，但它是纯函数、不涉及服务端。全部离线运行。
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -14,7 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use s3x::{byte_stream_from_bytes, ObjectKey, S3Client, S3Config, S3Error, UploadOptions};
+use s3x::{
+    byte_stream_from_bytes, presign_get, presign_put, presign_url, ObjectKey, PresignOptions,
+    S3Client, S3Config, S3Error, UploadOptions,
+};
 
 /// 桩服务：按序把每个 `body` 作为 `200 OK` 返回，并统计实际收到的请求数。
 ///
@@ -187,4 +191,60 @@ async fn plain_http_still_allows_other_operations() {
     assert_eq!(&body[..], b"stored-body");
     assert_eq!(hits.load(Ordering::SeqCst), 2);
     server.join().expect("桩服务线程不得 panic");
+}
+
+/// 预签名 URL 恒定使用 `UNSIGNED-PAYLOAD`，因此同样受默认拒绝策略约束。
+#[test]
+fn presign_over_http_is_rejected_by_default() {
+    let config = config("http://minio.internal:9000");
+
+    for error in [
+        presign_get(&config, &key(), 60).expect_err("presign_get 必须被拒绝"),
+        presign_put(&config, &key(), 60).expect_err("presign_put 必须被拒绝"),
+        presign_url(&config, &key(), &PresignOptions::get(60)).expect_err("presign_url 必须被拒绝"),
+    ] {
+        assert!(
+            matches!(error, S3Error::Config(_)),
+            "应为配置错误，实际为 {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("allow_unsigned_payload_over_http"),
+            "错误消息应指明放行方式: {error}"
+        );
+    }
+}
+
+/// 显式放行后，明文 HTTP 上同样可以生成预签名 URL。
+#[test]
+fn presign_over_http_is_allowed_when_opted_in() {
+    let mut opted_in = config("http://minio.internal:9000");
+    opted_in.allow_unsigned_payload_over_http = true;
+
+    let url = presign_get(&opted_in, &key(), 60).expect("显式放行后应成功");
+    // `config()` 使用 path-style 寻址。
+    assert!(
+        url.starts_with("http://minio.internal:9000/examplebucket/probe.bin?"),
+        "{url}"
+    );
+    assert!(url.contains("X-Amz-Signature="), "{url}");
+}
+
+/// HTTPS 端点不受该策略约束（预签名是纯函数，无需网络）。
+#[test]
+fn presign_over_https_is_not_rejected() {
+    let url = presign_get(&config("https://minio.internal:9000"), &key(), 60)
+        .expect("HTTPS 不应被该判定拦下");
+    assert!(
+        url.starts_with("https://minio.internal:9000/examplebucket/probe.bin?"),
+        "{url}"
+    );
+
+    // 未显式配置 endpoint 时走 AWS 官方 HTTPS 端点，同样放行。
+    let default_endpoint = S3Config {
+        endpoint: None,
+        ..config("https://minio.internal:9000")
+    };
+    assert!(presign_get(&default_endpoint, &key(), 60).is_ok());
 }

@@ -290,7 +290,7 @@ fn fixed_now() -> DateTime<Utc> {
 fn presign_get_contains_every_required_parameter() {
     let config = presign_config();
     let key = ObjectKey::new("dir/test.txt").expect("合法键");
-    let url = presign_get(&config, &key, 900);
+    let url = presign_get(&config, &key, 900).expect("预签名必须成功");
     let parsed = url::Url::parse(&url).expect("预签名 URL 必须合法");
 
     assert_eq!(parsed.scheme(), "https");
@@ -336,7 +336,7 @@ fn presign_expires_is_clamped_to_hard_bounds() {
     let config = presign_config();
     let key = ObjectKey::new("k").expect("合法键");
     let expires_of = |seconds: u64| {
-        let url = presign_get(&config, &key, seconds);
+        let url = presign_get(&config, &key, seconds).expect("预签名必须成功");
         url::Url::parse(&url)
             .expect("合法 URL")
             .query_pairs()
@@ -357,8 +357,11 @@ fn presign_is_reproducible_and_method_specific() {
     let config = presign_config();
     let key = ObjectKey::new("test.txt").expect("合法键");
     let options = PresignOptions::get(86400).at(fixed_now());
-    let first = presign_url(&config, &key, &options);
-    assert_eq!(first, presign_url(&config, &key, &options));
+    let first = presign_url(&config, &key, &options).expect("预签名必须成功");
+    assert_eq!(
+        first,
+        presign_url(&config, &key, &options).expect("预签名必须成功")
+    );
 
     // 固定时钟锁定完整 URL（含查询串顺序、编码与签名）。
     assert_eq!(
@@ -375,9 +378,10 @@ fn presign_is_reproducible_and_method_specific() {
     );
 
     // PUT 与 GET 的签名不同。
-    let put = presign_put(&config, &key, 86400);
+    let put = presign_put(&config, &key, 86400).expect("预签名必须成功");
     assert!(put.contains("X-Amz-Signature="));
-    let put_at = presign_url(&config, &key, &PresignOptions::put(86400).at(fixed_now()));
+    let put_at = presign_url(&config, &key, &PresignOptions::put(86400).at(fixed_now()))
+        .expect("预签名必须成功");
     assert_ne!(put_at, first);
 }
 
@@ -388,10 +392,12 @@ fn presign_honors_session_token_and_addressing_style() {
         ..presign_config()
     };
     let key = ObjectKey::new("test.txt").expect("合法键");
-    let url = presign_get(&with_token, &key, 60);
+    let url = presign_get(&with_token, &key, 60).expect("预签名必须成功");
     assert!(url.contains("X-Amz-Security-Token=session-token"), "{url}");
     assert!(
-        !presign_get(&presign_config(), &key, 60).contains("X-Amz-Security-Token"),
+        !presign_get(&presign_config(), &key, 60)
+            .expect("预签名必须成功")
+            .contains("X-Amz-Security-Token"),
         "无 session token 时不得出现该参数"
     );
 
@@ -401,7 +407,7 @@ fn presign_honors_session_token_and_addressing_style() {
         ..presign_config()
     };
     let key = ObjectKey::new("dir/a b.txt").expect("合法键");
-    let url = presign_get(&path_style, &key, 60);
+    let url = presign_get(&path_style, &key, 60).expect("预签名必须成功");
     assert!(
         url.starts_with("https://minio.example.com:9000/examplebucket/dir/a%20b.txt?"),
         "{url}"

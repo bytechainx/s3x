@@ -203,8 +203,12 @@ fn pure_helpers_are_reachable_from_the_crate_root() {
     assert_eq!(signature.signature.len(), 64);
     assert!(signature.authorization.starts_with("AWS4-HMAC-SHA256 "));
 
-    assert!(!presign_get(&config, &key, 60).is_empty());
-    assert!(!presign_put(&config, &key, 60).is_empty());
+    assert!(!presign_get(&config, &key, 60)
+        .expect("预签名必须成功")
+        .is_empty());
+    assert!(!presign_put(&config, &key, 60)
+        .expect("预签名必须成功")
+        .is_empty());
     assert!(is_s3_retryable(&S3Error::Timeout("t".into())));
     assert!(backoff_delay(&default_retry_config(), 2).as_millis() > 0);
     assert_eq!(RetryConfig::default().max_attempts, DEFAULT_MAX_RETRIES);

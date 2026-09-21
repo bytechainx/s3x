@@ -58,7 +58,7 @@
 //!     assert_eq!(&bytes[..], b"a,b\n1,2\n");
 //!
 //!     // 生成临时下载链接（默认 1 小时，最长 7 天）
-//!     let url = presign_get(&client.config(), &key, 3600);
+//!     let url = presign_get(&client.config(), &key, 3600)?;
 //!     assert!(url.contains("X-Amz-Signature="));
 //!
 //!     let health = client.health_check().await?;
@@ -187,7 +187,7 @@ mod public_api_surface {
         assert_eq!(sha256_hex(b""), EMPTY_PAYLOAD_SHA256);
         assert_eq!(date_stamp("20150830T123600Z"), "20150830");
 
-        let url = presign_get(&config, &key, 60);
+        let url = presign_get(&config, &key, 60).expect("预签名必须成功");
         assert!(url.contains("X-Amz-Signature="), "{url}");
         assert_eq!(PRESIGN_SIGNED_HEADERS, "host");
         assert_eq!(HARD_MAX_PRESIGN_EXPIRES_SECS, 604_800);
