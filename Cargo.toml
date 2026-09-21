@@ -1,0 +1,40 @@
+[package]
+name = "s3x"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Async AWS S3 and S3-compatible object storage adapter with hand-rolled Signature Version 4 signing"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bytechainx/s3x"
+homepage = "https://github.com/bytechainx/s3x"
+documentation = "https://docs.rs/s3x"
+readme = "README.md"
+keywords = ["s3", "object-storage", "aws", "sigv4", "async"]
+categories = ["network-programming", "filesystem"]
+include = ["src/**/*", "tests/**/*", "examples/**/*", "README.md", "LICENSE-*", "Cargo.toml"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+percent-encoding = "2"
+quick-xml = "0.41"
+bytes = "1"
+futures-util = "0.3"
+futures-core = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+tracing = "0.1"
+url = "2"
+toml = "0.8"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
