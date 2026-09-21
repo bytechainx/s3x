@@ -213,9 +213,16 @@ fn build() -> Result<S3Config, Box<dyn std::error::Error>> {
 - `Debug` 输出中这两个字段固定渲染为 `***`；`SignRequest` 的 `Debug` 同样脱敏。
 - 错误消息只保留 HTTP 状态码、S3 错误码（如 `SlowDown`、`NoSuchKey`）与截断后的
   服务端 `<Message>`（≤ 512 字符）；读取错误响应最多 4 KiB，避免日志放大。
-- 可重试判定：网络 / IO / 超时 / HTTP 408 / 429 / 5xx / `SlowDown` /
-  `RequestTimeout` 为可重试；配置错误、序列化错误、对象键非法与其余 4xx
-  （含 401 / 403 / 404）为不可重试。
+- 可重试判定（`S3Error::is_retryable()`，**错误码优先于状态码**）：
+  - **可重试**：网络 / IO / 超时类错误；响应体错误码为 `SlowDown` /
+    `RequestTimeout` / `InternalError` / `ServiceUnavailable` 的**任意**状态码；
+    HTTP `408` / `429` / `5xx`。
+  - **不可重试**：配置错误、序列化错误、对象键非法、不支持的操作，以及
+    **其余全部 4xx**（含 401 / 403 / 404）。
+  - 之所以先看错误码：AWS 的 `RequestTimeout` 使用 HTTP `400`，只按状态码判定
+    会把它当成永久故障漏掉重试。只有明确列出的瞬时错误码才享受这一豁免——
+    `403 SignatureDoesNotMatch` 这类鉴权失败仍不会重试。
+  - 重试次数始终受 `max_retries`（默认 3，上限 10）约束，不会无限重试。
 
 ## 与 ossx 的区别
 

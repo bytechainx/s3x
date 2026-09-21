@@ -21,6 +21,11 @@ const SLOW_DOWN: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
 /// 404 的典型 S3 错误体（不可重试）。
 const NO_SUCH_KEY: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
 <Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>";
+/// AWS 的 `RequestTimeout` 使用 HTTP **400**：只有「错误码优先于状态码」才能重试它。
+const REQUEST_TIMEOUT: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<Error><Code>RequestTimeout</Code>\
+<Message>Your socket connection to the server was not read from or written to within \
+the timeout period.</Message></Error>";
 
 /// 桩服务收到的请求数。
 type Hits = Arc<AtomicUsize>;
@@ -150,6 +155,52 @@ async fn exhausts_max_retries_on_persistent_5xx() {
         4,
         "max_retries=4 表示最多 4 次尝试（含首次）"
     );
+    server.join().expect("桩服务线程不得 panic");
+}
+
+/// AWS 的 `RequestTimeout` 挂在 HTTP `400` 上：必须按错误码重试，而不是按状态码放弃。
+#[tokio::test]
+async fn retries_request_timeout_on_http_400() {
+    let (endpoint, hits, server) = serve_script(vec![
+        ("HTTP/1.1 400 Bad Request", REQUEST_TIMEOUT),
+        ("HTTP/1.1 200 OK", "after-timeout"),
+    ]);
+    let client = S3Client::new(config(&endpoint, 4)).expect("客户端构造必须成功");
+
+    let body = client
+        .get_object_bytes(&key())
+        .await
+        .expect("400 RequestTimeout 必须重试并在第二次成功");
+
+    assert_eq!(&body[..], b"after-timeout");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        2,
+        "400 + RequestTimeout 必须重试一次（错误码优先于状态码）"
+    );
+    server.join().expect("桩服务线程不得 panic");
+}
+
+/// 对照：同为 400 但不含瞬时错误码时不得重试，避免把永久故障当限流。
+#[tokio::test]
+async fn does_not_retry_http_400_without_transient_code() {
+    let invalid_request = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<Error><Code>InvalidRequest</Code><Message>Bad request.</Message></Error>";
+    let (endpoint, hits, server) =
+        serve_script(vec![("HTTP/1.1 400 Bad Request", invalid_request)]);
+    let client = S3Client::new(config(&endpoint, 4)).expect("客户端构造必须成功");
+
+    let error = client
+        .get_object_bytes(&key())
+        .await
+        .expect_err("400 InvalidRequest 必须失败");
+
+    assert!(
+        matches!(&error, S3Error::Backend { status: 400, .. }),
+        "{error:?}"
+    );
+    assert!(!error.is_retryable(), "非瞬时错误码的 400 不可重试");
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "不得重试");
     server.join().expect("桩服务线程不得 panic");
 }
 

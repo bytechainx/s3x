@@ -151,7 +151,7 @@ fn retryable_classification_covers_documented_branches() {
             "HTTP {status} 应可重试"
         );
     }
-    // 非 4xx/5xx 时才依错误码判定瞬时故障（4xx 一律不重试，见下方断言）。
+    // 错误码优先于状态码：瞬时错误码挂在任意状态码上都可重试。
     for code in [
         "SlowDown",
         "RequestTimeout",
@@ -163,7 +163,16 @@ fn retryable_classification_covers_documented_branches() {
             code: Some(code.into()),
             message: "x".into()
         }));
+        assert!(
+            is_s3_retryable(&S3Error::Backend {
+                status: 400,
+                code: Some(code.into()),
+                message: "x".into()
+            }),
+            "HTTP 400 + {code} 应可重试"
+        );
     }
+    // 无瞬时错误码时按状态码判定：其余 4xx 一律不可重试。
     for status in [400, 401, 403, 404, 405, 409, 412, 416] {
         assert!(
             !is_s3_retryable(&S3Error::Backend {
@@ -174,16 +183,48 @@ fn retryable_classification_covers_documented_branches() {
             "HTTP {status} 不应可重试"
         );
     }
-    // 状态码优先：4xx 即使携带 SlowDown 之类的瞬时错误码也不重试。
+    // 非瞬时错误码的 4xx 依然不可重试（避免把鉴权失败当成限流）。
     assert!(!is_s3_retryable(&S3Error::Backend {
         status: 403,
-        code: Some("SlowDown".into()),
-        message: "状态码优先".into()
+        code: Some("SignatureDoesNotMatch".into()),
+        message: "鉴权失败".into()
     }));
     assert!(!is_s3_retryable(&S3Error::Config("x".into())));
     assert!(!is_s3_retryable(&S3Error::Serialization("x".into())));
     assert!(!is_s3_retryable(&S3Error::InvalidObjectKey("x".into())));
     assert!(!is_s3_retryable(&S3Error::Unsupported("x".into())));
+}
+
+/// 固定「错误码优先于状态码」策略的**关键收益**：AWS 的 `RequestTimeout` 使用
+/// HTTP `400`，只按状态码判定会漏掉它，因此必须先看响应体错误码。
+///
+/// 该策略由 `S3Error::is_retryable` 的文档注释与 README「安全约定」一节描述。
+/// 若将来要改回「状态码优先」，必须同时修改本用例、`src/retry.rs` 的
+/// `retryable_classification_matches_error_type` 与 README。
+#[test]
+fn request_timeout_on_http_400_is_retryable() {
+    assert!(
+        is_s3_retryable(&S3Error::Backend {
+            status: 400,
+            code: Some("RequestTimeout".into()),
+            message: "Your socket connection to the server was not read from or written to \
+                      within the timeout period."
+                .into()
+        }),
+        "AWS 的 RequestTimeout 是 HTTP 400，必须按错误码判定为可重试"
+    );
+    // 对照：同一状态码若没有瞬时错误码，依然不可重试（不会把 400 一律当限流）。
+    assert!(!is_s3_retryable(&S3Error::Backend {
+        status: 400,
+        code: Some("InvalidRequest".into()),
+        message: "x".into()
+    }));
+    // 对照：同为瞬时语义的错误码挂在 5xx 上同样可重试。
+    assert!(is_s3_retryable(&S3Error::Backend {
+        status: 503,
+        code: Some("SlowDown".into()),
+        message: "x".into()
+    }));
 }
 
 #[test]

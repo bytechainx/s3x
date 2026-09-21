@@ -307,15 +307,26 @@ mod tests {
             code: None,
             message: "x".into()
         }));
-        // 状态码优先：非 4xx/5xx 时才看错误码。
+        // 错误码优先于状态码：瞬时错误码挂在任意状态码上都可重试。
         assert!(is_s3_retryable(&S3Error::Backend {
             status: 300,
             code: Some("SlowDown".into()),
             message: "x".into()
         }));
-        assert!(!is_s3_retryable(&S3Error::Backend {
+        assert!(is_s3_retryable(&S3Error::Backend {
+            status: 400,
+            code: Some("RequestTimeout".into()),
+            message: "x".into()
+        }));
+        assert!(is_s3_retryable(&S3Error::Backend {
             status: 400,
             code: Some("SlowDown".into()),
+            message: "x".into()
+        }));
+        // 无瞬时错误码时仍按状态码判定：4xx 中只有 408 / 429 可重试。
+        assert!(!is_s3_retryable(&S3Error::Backend {
+            status: 400,
+            code: None,
             message: "x".into()
         }));
         assert!(!is_s3_retryable(&S3Error::Backend {

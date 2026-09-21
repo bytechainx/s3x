@@ -47,27 +47,27 @@ pub enum S3Error {
 impl S3Error {
     /// 是否属于可以安全重试的瞬时错误。
     ///
-    /// - 可重试：[`S3Error::Connection`]、[`S3Error::Io`]、[`S3Error::Timeout`]，
-    ///   以及 HTTP `408` / `429` / `5xx`，或（非 4xx 状态下）S3 错误码
-    ///   `SlowDown` / `RequestTimeout` / `InternalError` / `ServiceUnavailable`。
-    /// - 不可重试：配置、序列化、对象键非法、不支持的操作，以及**其余全部 4xx**
-    ///   （含 401 / 403 / 404）——状态码优先，即使响应体携带 `SlowDown` 也不重试；
-    ///   重试只会放大失败。
+    /// 判定顺序为**错误码优先于状态码**：
+    ///
+    /// 1. [`S3Error::Connection`]、[`S3Error::Io`]、[`S3Error::Timeout`] 一律可重试；
+    /// 2. 响应体错误码为 `SlowDown` / `RequestTimeout` / `InternalError` /
+    ///    `ServiceUnavailable` 之一时可重试——这些瞬时故障可能挂在**任意**状态码上，
+    ///    AWS 的 `RequestTimeout` 就是 HTTP `400`，只看状态码会漏掉它；
+    /// 3. 否则按状态码判定：HTTP `408` / `429` / `5xx` 可重试；
+    /// 4. 其余全部 4xx（含 401 / 403 / 404）以及配置、序列化、对象键非法、
+    ///    不支持的操作均为永久故障，重试只会放大失败。
+    ///
+    /// 重试次数始终由 [`crate::RetryConfig`] 上限约束，因此携带瞬时错误码的 4xx
+    /// 不会造成无限重试。
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Connection(_) | Self::Io(_) | Self::Timeout(_) => true,
             Self::Backend { status, code, .. } => {
-                if (400..500).contains(status) {
-                    return *status == 408 || *status == 429;
-                }
-                if *status >= 500 {
-                    return true;
-                }
-                matches!(
-                    code.as_deref(),
-                    Some("SlowDown" | "RequestTimeout" | "InternalError" | "ServiceUnavailable")
-                )
+                is_transient_s3_code(code.as_deref())
+                    || *status == 408
+                    || *status == 429
+                    || *status >= 500
             }
             Self::Config(_)
             | Self::Serialization(_)
@@ -75,6 +75,18 @@ impl S3Error {
             | Self::InvalidObjectKey(_) => false,
         }
     }
+}
+
+/// AWS 明确建议重试的瞬时错误码。
+///
+/// 这些码可能出现在**任意** HTTP 状态上（`RequestTimeout` = `400`、
+/// `InternalError` = `500`、`SlowDown` / `ServiceUnavailable` = `503`），
+/// 因此不能只按状态码判定可重试性。
+fn is_transient_s3_code(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some("SlowDown" | "RequestTimeout" | "InternalError" | "ServiceUnavailable")
+    )
 }
 
 /// crate 专用 `Result` 别名。
@@ -102,8 +114,13 @@ mod tests {
             backend(503, Some("ServiceUnavailable")),
             backend(429, None),
             backend(408, None),
+            // 错误码优先于状态码：瞬时错误码挂在 3xx / 4xx 上同样可重试。
             backend(300, Some("SlowDown")),
             backend(300, Some("RequestTimeout")),
+            // AWS 的 RequestTimeout 是 HTTP 400——只按状态码判定会漏掉它。
+            backend(400, Some("RequestTimeout")),
+            backend(400, Some("SlowDown")),
+            backend(403, Some("SlowDown")),
         ];
         for error in retryable {
             assert!(error.is_retryable(), "{error:?} 应可重试");
@@ -114,11 +131,12 @@ mod tests {
             S3Error::Serialization("x".into()),
             S3Error::Unsupported("x".into()),
             S3Error::InvalidObjectKey("x".into()),
+            // 非瞬时错误码的 4xx 不享受「错误码优先」豁免。
             backend(400, Some("InvalidBucketName")),
-            backend(400, Some("SlowDown")),
+            backend(400, Some("InvalidRequest")),
+            backend(400, None),
             backend(401, None),
             backend(403, Some("SignatureDoesNotMatch")),
-            backend(403, Some("SlowDown")),
             backend(404, Some("NoSuchKey")),
             backend(409, None),
         ];
