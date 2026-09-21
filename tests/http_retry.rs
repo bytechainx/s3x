@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! HTTP 层瞬时故障的重试行为。
 //!
 //! 回归保护：状态码到 [`s3x::S3Error`] 的映射必须发生在**被重试的闭包内部**。

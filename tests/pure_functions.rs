@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! 纯函数行为：XML 解析/构造、重试策略与字节流构造（全部离线）。
 
 use std::sync::atomic::{AtomicU32, Ordering};

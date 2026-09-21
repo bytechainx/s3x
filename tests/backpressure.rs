@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! `max_in_flight` 并发背压必须覆盖**流式下载**的读取阶段。
 //!
 //! 回归保护：`get_object` 返回的字节流要持有并发许可，直到流被消费完或丢弃。

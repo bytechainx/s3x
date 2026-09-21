@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! 每个公开操作真正发出的 HTTP 方法。
 //!
 //! 回归保护：方法名此前是字符串，经 `reqwest::Method::from_bytes(..).unwrap_or(GET)`

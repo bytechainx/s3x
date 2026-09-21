@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! 配置校验、环境变量解析、secret 脱敏与 `effective_endpoint`。
 
 use std::time::Duration;

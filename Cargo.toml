@@ -11,7 +11,19 @@ documentation = "https://github.com/bytechainx/s3x#readme"
 readme = "README.md"
 keywords = ["s3", "object-storage", "aws", "sigv4", "async"]
 categories = ["network-programming", "filesystem"]
-include = ["src/**/*", "tests/**/*", "examples/**/*", "README.md", "LICENSE-*", "Cargo.toml"]
+include = [
+    "src/**/*",
+    "tests/**/*",
+    "examples/**/*",
+    "benches/**/*",
+    "docs/**/*",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTEXT.md",
+    "CONTRIBUTING.md",
+    "LICENSE-*",
+    "Cargo.toml",
+]
 
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -34,3 +46,20 @@ thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "hot_path"
+harness = false
+
+[lints.rust]
+private_interfaces = "deny"
+private_bounds = "deny"
+unused_must_use = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! `ObjectKey` 校验边界。
 
 use s3x::{ObjectKey, S3Error, MAX_OBJECT_KEY_BYTES};

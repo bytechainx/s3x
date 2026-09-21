@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! 「明文 HTTP + 未签名载荷」默认拒绝。
 //!
 //! `UNSIGNED-PAYLOAD` 表示签名**不覆盖请求体**；明文 HTTP 也不提供传输层完整性。

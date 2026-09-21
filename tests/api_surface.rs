@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! 公共 API 表面：类型存在性、`Send + Sync + Clone`、`serde::Deserialize` 与同步构造。
 
 use s3x::{
