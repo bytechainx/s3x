@@ -680,6 +680,17 @@ fn env_bool(name: &str) -> S3Result<Option<bool>> {
 }
 
 /// 缺省 endpoint 的 AWS 官方形态（供文档与测试引用）。
+///
+/// # Examples
+///
+/// ```
+/// use s3x::aws_endpoint_for_region;
+///
+/// assert_eq!(
+///     aws_endpoint_for_region("ap-east-1"),
+///     "https://s3.ap-east-1.amazonaws.com"
+/// );
+/// ```
 #[must_use]
 pub fn aws_endpoint_for_region(region: &str) -> String {
     format!("https://s3.{region}.amazonaws.com")
