@@ -90,6 +90,15 @@
 //! 避免硬编码字符串。`access_key_secret` 与 `session_token` 只能经环境变量或
 //! [`S3ConfigBuilder`] 注入。
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable
+    )
+)]
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 

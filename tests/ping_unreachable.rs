@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! `ping()` 的失败与「可达但无权限」分支，以及 HTTP 错误体映射。
 //!
 //! - `127.0.0.1:1` 必然拒绝连接 -> `Err`（连接/超时类，可重试）；

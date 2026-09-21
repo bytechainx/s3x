@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable
+)]
 //! SigV4 已知向量（AWS 官方测试套件 + S3 文档示例）与预签名 URL 参数完整性。
 //!
 //! 向量来源：
