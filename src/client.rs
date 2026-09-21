@@ -8,8 +8,9 @@
 //!
 //! - [`S3Client::connect`] **不发起网络请求**，只做配置校验与 HTTP 客户端构造；
 //!   连通性请用 [`S3Client::ping`] 显式验证（`HEAD /{bucket}`）。
-//! - [`S3Client::put_object_stream`] 使用 `UNSIGNED-PAYLOAD` 占位哈希，因此要求
-//!   HTTPS（或服务端接受该占位）；流式请求体无法回放，故不做重试。
+//! - [`S3Client::put_object_stream`] 使用 `UNSIGNED-PAYLOAD` 占位哈希，即**签名不
+//!   覆盖请求体**。HTTPS 下传输层仍保证完整性；明文 HTTP 下两个环节同时失守，
+//!   故该组合默认被拒绝，需显式放行。流式请求体无法回放，故不做重试。
 //! - 批量删除只提供请求体构造与结果解析的纯函数（见
 //!   [`build_delete_objects_body`](crate::build_delete_objects_body) /
 //!   [`parse_delete_objects`](crate::parse_delete_objects)）：S3 要求
@@ -245,7 +246,13 @@ impl S3Client {
 
     /// 以字节流上传（长度未知时使用）。
     ///
-    /// 载荷哈希固定为 [`UNSIGNED_PAYLOAD`]，因此需要 HTTPS 或服务端接受该占位；
+    /// 载荷哈希固定为 [`UNSIGNED_PAYLOAD`]，即**签名不覆盖请求体**。HTTPS 下传输层
+    /// 仍保证完整性，但明文 HTTP 下两个环节会同时失守（请求体可被篡改而签名依然
+    /// 有效），因此本方法在 endpoint 为 `http` 时默认返回 [`S3Error::Config`]；
+    /// 确认可接受该降级（例如本地 MinIO 调试）时，用
+    /// [`S3Config::allow_unsigned_payload_over_http`](crate::S3Config::allow_unsigned_payload_over_http)
+    /// 或环境变量 `FOUNDATIONX_S3X_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP` 显式放行。
+    ///
     /// 请求体无法回放，**不做重试**。`content_length` 为 `Some` 时显式设置
     /// `Content-Length`（否则使用分块传输编码）。
     pub async fn put_object_stream(
@@ -255,6 +262,7 @@ impl S3Client {
         options: &UploadOptions,
         content_length: Option<u64>,
     ) -> S3Result<ObjectMeta> {
+        self.reject_unsigned_payload_over_http()?;
         let spec = RequestSpec::new("PUT", &self.inner.config, Some(key.as_str()))
             .with_headers(options.additional_headers()?)
             .with_payload_hash(UNSIGNED_PAYLOAD);
@@ -324,6 +332,24 @@ impl S3Client {
             .bytes()
             .await
             .map_err(|error| map_transport_error(&error))
+    }
+
+    /// 拒绝「明文 HTTP + 未签名载荷」这一组合。
+    ///
+    /// `UNSIGNED-PAYLOAD` 不覆盖请求体，明文传输也不提供完整性，二者叠加时请求体
+    /// 在链路上可被篡改而签名依然有效。默认拒绝，可用配置或环境变量显式放行。
+    fn reject_unsigned_payload_over_http(&self) -> S3Result<()> {
+        let config = &self.inner.config;
+        if config.endpoint_is_plain_http() && !config.allow_unsigned_payload_over_http {
+            return Err(S3Error::Config(
+                "明文 HTTP endpoint 不允许使用 UNSIGNED-PAYLOAD：签名不覆盖请求体，\
+                 传输层亦无完整性保护，请求体可被篡改。请改用 HTTPS，或设置 \
+                 allow_unsigned_payload_over_http / \
+                 FOUNDATIONX_S3X_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP 显式接受该降级"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// 删除单个对象（幂等，可安全重试）。

@@ -205,11 +205,21 @@ fn build() -> Result<S3Config, Box<dyn std::error::Error>> {
 | `FOUNDATIONX_S3X_MAX_RETRIES` | `max_retries` | `3` | 最大尝试次数（含首次），1..=10；`1` 表示不重试 |
 | `FOUNDATIONX_S3X_MAX_IN_FLIGHT` | `max_in_flight` | `64` | 全局并发上限，1..=1024 |
 | `FOUNDATIONX_S3X_USER_AGENT` | `user_agent` | `s3x/<version>` | `User-Agent` 头 |
+| `FOUNDATIONX_S3X_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP` | `allow_unsigned_payload_over_http` | `false` | 是否允许在明文 HTTP endpoint 上使用未签名载荷，见「安全约定」 |
 
 布尔变量兼容 `1/0`、`true/false`、`yes/no`、`on/off`。
 
 ### 安全约定
 
+- **明文 HTTP 上禁止未签名载荷**：`put_object_stream` 的载荷哈希是
+  `UNSIGNED-PAYLOAD`，即**签名不覆盖请求体**。HTTPS 下传输层仍保证完整性，但明文
+  HTTP 下两个环节同时失守——请求体可被链路篡改而签名依然有效。因此 endpoint 为
+  `http` 时该操作默认返回配置错误；确认可接受该降级（例如本地 MinIO 调试）时才用
+  `allow_unsigned_payload_over_http` 显式放行。`put_object` / `get_object` 等操作的
+  载荷哈希是真实 SHA-256，不受此限制。
+  > 命名说明：AWS 将 `UNSIGNED-PAYLOAD` 列为 "unsigned payload option"，并**建议**
+  > （而非要求）包含载荷校验和；本 crate 的默认拒绝是自身的**安全策略**，不是服务端
+  > 的硬性约束。
 - `access_key_secret` 与 `session_token` 只能经环境变量或 `S3ConfigBuilder`
   注入；`from_toml()` 会因为 `deny_unknown_fields` 直接拒绝这两个键。
 - `Debug` 输出中这两个字段固定渲染为 `***`；`SignRequest` 的 `Debug` 同样脱敏。

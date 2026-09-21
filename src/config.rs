@@ -35,6 +35,9 @@ pub const ENV_ACCESS_KEY_SECRET: &str = "FOUNDATIONX_S3X_ACCESS_KEY_SECRET";
 pub const ENV_SESSION_TOKEN: &str = "FOUNDATIONX_S3X_SESSION_TOKEN";
 /// 环境变量：是否强制 path-style 寻址。
 pub const ENV_FORCE_PATH_STYLE: &str = "FOUNDATIONX_S3X_FORCE_PATH_STYLE";
+/// 环境变量：是否允许在明文 HTTP endpoint 上使用 `UNSIGNED-PAYLOAD`（默认 `false`）。
+pub const ENV_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP: &str =
+    "FOUNDATIONX_S3X_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP";
 /// 环境变量：请求超时（毫秒）。
 pub const ENV_REQUEST_TIMEOUT_MS: &str = "FOUNDATIONX_S3X_REQUEST_TIMEOUT_MS";
 /// 环境变量：连接超时（毫秒，`0` 表示不单独限制）。
@@ -104,6 +107,13 @@ pub struct S3Config {
     /// `false`（默认）时使用 virtual-hosted 风格（`{bucket}.{endpoint}/{key}`），
     /// 与 AWS 官方行为一致；带点号的桶名或自签证书场景建议置为 `true`。
     pub force_path_style: bool,
+    /// 是否允许在**明文 HTTP** endpoint 上使用 `UNSIGNED-PAYLOAD`（默认 `false`）。
+    ///
+    /// `UNSIGNED-PAYLOAD` 表示签名**不覆盖请求体**。走 HTTPS 时传输层仍能保证
+    /// 完整性，但若同时是明文 HTTP，请求体在链路上可被篡改而签名依然有效——
+    /// 两个环节同时失守。因此默认拒绝；
+    /// 只有使用方显式确认这是可接受的降级（例如本地 MinIO 调试）时才放行。
+    pub allow_unsigned_payload_over_http: bool,
     /// 单次请求超时（毫秒），上限 [`HARD_MAX_REQUEST_TIMEOUT_MS`]。
     pub request_timeout_ms: u64,
     /// 连接（TCP/TLS 握手）超时（毫秒）；`0` 表示只受请求超时约束。
@@ -129,6 +139,7 @@ impl Default for S3Config {
             access_key_secret: String::new(),
             session_token: None,
             force_path_style: false,
+            allow_unsigned_payload_over_http: false,
             request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
             max_retries: DEFAULT_MAX_RETRIES,
@@ -149,6 +160,10 @@ impl fmt::Debug for S3Config {
             .field("access_key_secret", &"***")
             .field("session_token", &self.session_token.as_ref().map(|_| "***"))
             .field("force_path_style", &self.force_path_style)
+            .field(
+                "allow_unsigned_payload_over_http",
+                &self.allow_unsigned_payload_over_http,
+            )
             .field("request_timeout_ms", &self.request_timeout_ms)
             .field("connect_timeout_ms", &self.connect_timeout_ms)
             .field("max_retries", &self.max_retries)
@@ -315,6 +330,16 @@ impl S3Config {
         }
     }
 
+    /// 当前生效的 endpoint 是否为**明文 HTTP**（非 TLS）。
+    ///
+    /// 用于判定「未签名载荷」是否处于**无任何完整性保护**的状态：`UNSIGNED-PAYLOAD`
+    /// 本身就不覆盖请求体，若再叠加明文传输，请求体在链路上可被篡改而签名依然有效。
+    /// endpoint 无法解析时返回 `false`（交由 [`S3Config::validate`] 报错）。
+    #[must_use]
+    pub fn endpoint_is_plain_http(&self) -> bool {
+        url::Url::parse(&self.effective_endpoint()).is_ok_and(|parsed| parsed.scheme() == "http")
+    }
+
     /// 桶级请求的完整 URL（无查询串）。
     #[must_use]
     pub fn bucket_url(&self) -> String {
@@ -384,6 +409,9 @@ impl S3Config {
         }
         if let Some(value) = env_bool(ENV_FORCE_PATH_STYLE)? {
             self.force_path_style = value;
+        }
+        if let Some(value) = env_bool(ENV_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP)? {
+            self.allow_unsigned_payload_over_http = value;
         }
         if let Some(value) = env_parsed::<u64>(ENV_REQUEST_TIMEOUT_MS)? {
             self.request_timeout_ms = value;
@@ -489,6 +517,14 @@ impl S3ConfigBuilder {
     #[must_use]
     pub fn force_path_style(mut self, force_path_style: bool) -> Self {
         self.inner.force_path_style = force_path_style;
+        self
+    }
+
+    /// 允许在明文 HTTP endpoint 上使用 `UNSIGNED-PAYLOAD`（默认拒绝）。
+    ///
+    /// 仅在确认「请求体完整性不受保护」可接受时开启（例如本地 MinIO 调试）。
+    pub fn allow_unsigned_payload_over_http(mut self, allow: bool) -> Self {
+        self.inner.allow_unsigned_payload_over_http = allow;
         self
     }
 

@@ -8,8 +8,10 @@
 //!   再按 `(键, 值)` 字节序排序；
 //! - **规范化头**：头名转小写、值折叠连续空白、按头名排序，同名头按出现顺序用
 //!   逗号连接；
-//! - **载荷**：请求体 SHA-256 十六进制，或 [`UNSIGNED_PAYLOAD`]（仅 HTTPS 且
-//!   服务端支持时可用）。
+//! - **载荷**：请求体 SHA-256 十六进制，或 [`UNSIGNED_PAYLOAD`]。[`UNSIGNED_PAYLOAD`]
+//!   表示签名**不覆盖请求体**——AWS 将其列为 "unsigned payload option"，并建议
+//!   「为增强安全性请包含载荷校验和」。它本身不是错误用法，但叠加明文 HTTP 后
+//!   请求体将失去任何完整性保护。
 //!
 //! 已知向量测试覆盖 AWS 官方 `aws-sig-v4-test-suite` 的 `get-vanilla`、
 //! `get-vanilla-query-order-key-case`、`get-vanilla-query-order-key`、
