@@ -227,14 +227,9 @@ impl S3Client {
         let response = retry::with_retry(&self.inner.retry, "put_object", || {
             let spec = &spec;
             let body = body.clone();
-            async move { self.inner.send(spec, Some(body)).await }
+            async move { self.inner.send_checked(spec, Some(body)).await }
         })
         .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let response_body = read_body_prefix(response).await;
-            return Err(map_http_error(status, &response_body));
-        }
         Ok(ObjectMeta {
             key: key.as_str().to_owned(),
             size,
@@ -302,14 +297,9 @@ impl S3Client {
             RequestSpec::new("GET", &self.inner.config, Some(key.as_str())).with_headers(headers);
         let response = retry::with_retry(&self.inner.retry, "get_object", || {
             let spec = &spec;
-            async move { self.inner.send(spec, None).await }
+            async move { self.inner.send_checked(spec, None).await }
         })
         .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let response_body = read_body_prefix(response).await;
-            return Err(map_http_error(status, &response_body));
-        }
         let meta = object_meta_from_headers(key, response.headers());
         let stream: ByteStream = Box::pin(futures_util::StreamExt::map(
             response.bytes_stream(),
@@ -323,14 +313,9 @@ impl S3Client {
         let spec = RequestSpec::new("GET", &self.inner.config, Some(key.as_str()));
         let response = retry::with_retry(&self.inner.retry, "get_object_bytes", || {
             let spec = &spec;
-            async move { self.inner.send(spec, None).await }
+            async move { self.inner.send_checked(spec, None).await }
         })
         .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let response_body = read_body_prefix(response).await;
-            return Err(map_http_error(status, &response_body));
-        }
         response
             .bytes()
             .await
@@ -340,16 +325,11 @@ impl S3Client {
     /// 删除单个对象（幂等，可安全重试）。
     pub async fn delete_object(&self, key: &ObjectKey) -> S3Result<()> {
         let spec = RequestSpec::new("DELETE", &self.inner.config, Some(key.as_str()));
-        let response = retry::with_retry(&self.inner.retry, "delete_object", || {
+        retry::with_retry(&self.inner.retry, "delete_object", || {
             let spec = &spec;
-            async move { self.inner.send(spec, None).await }
+            async move { self.inner.send_checked(spec, None).await }
         })
         .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let response_body = read_body_prefix(response).await;
-            return Err(map_http_error(status, &response_body));
-        }
         Ok(())
     }
 
@@ -358,14 +338,10 @@ impl S3Client {
         let spec = RequestSpec::new("HEAD", &self.inner.config, Some(key.as_str()));
         let response = retry::with_retry(&self.inner.retry, "head_object", || {
             let spec = &spec;
-            async move { self.inner.send(spec, None).await }
+            async move { self.inner.send_checked(spec, None).await }
         })
         .await?;
-        let status = response.status();
-        if !status.is_success() {
-            // HEAD 响应没有正文，只能依赖状态码分类。
-            return Err(map_http_error(status, &[]));
-        }
+        // HEAD 响应没有正文；错误码由状态码推导。
         Ok(object_meta_from_headers(key, response.headers()))
     }
 
@@ -401,14 +377,9 @@ impl S3Client {
         let spec = RequestSpec::new("GET", &self.inner.config, None).with_query(query);
         let response = retry::with_retry(&self.inner.retry, "list_objects_v2", || {
             let spec = &spec;
-            async move { self.inner.send(spec, None).await }
+            async move { self.inner.send_checked(spec, None).await }
         })
         .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let response_body = read_body_prefix(response).await;
-            return Err(map_http_error(status, &response_body));
-        }
         // 成功响应必须完整读取（页面大小由 max-keys 约束）。
         let body = response
             .bytes()
@@ -498,12 +469,37 @@ impl Inner {
     }
 
     /// 签名并发送一次请求（含并发背压与传输错误映射）。
+    ///
+    /// 本方法**不检查 HTTP 状态码**：任何响应都返回 `Ok`。需要让
+    /// [`retry::with_retry`] 对 HTTP 层瞬时故障生效时，请改用
+    /// [`Inner::send_checked`]；`ping` 需要自行容忍 401/403，因此继续使用本方法。
     async fn send(&self, spec: &RequestSpec, body: Option<Bytes>) -> S3Result<reqwest::Response> {
         let _permit = self.acquire().await?;
         self.build_request(spec, body)?
             .send()
             .await
             .map_err(|error| map_transport_error(&error))
+    }
+
+    /// 发送一次请求，并把非 2xx 状态映射为 [`S3Error`]。
+    ///
+    /// 状态码到错误的映射必须发生在**被重试的闭包内部**：否则
+    /// [`retry::with_retry`] 只能看到传输层错误，`max_retries` 对
+    /// `5xx` / `429` / `SlowDown` 等 HTTP 层瞬时故障完全失效。
+    /// `Ok` 返回值保证状态码为 2xx。
+    async fn send_checked(
+        &self,
+        spec: &RequestSpec,
+        body: Option<Bytes>,
+    ) -> S3Result<reqwest::Response> {
+        let response = self.send(spec, body).await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        // 错误体只读前缀（上限 `MAX_ERROR_BODY_BYTES`），用于提取 S3 `<Code>`。
+        let response_body = read_body_prefix(response).await;
+        Err(map_http_error(status, &response_body))
     }
 }
 
