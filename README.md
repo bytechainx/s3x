@@ -16,7 +16,9 @@
 - 默认 virtual-hosted 寻址，`force_path_style` 一键切换到 path-style（MinIO / Ceph）
 - 统一错误分类：`S3Error::is_retryable()` 区分瞬时故障与永久故障
 - 错误消息不回显 secret access key / session token
-- `max_in_flight` 信号量背压 + 指数退避抖动重试（crate 内独立实现）
+- `max_in_flight` 信号量背压 + 指数退避抖动重试（crate 内独立实现）；
+  背压覆盖**整个请求生命周期**——`get_object` 返回的下载流会继续持有并发额度，
+  直到流被消费完或丢弃，慢速大对象下载同样受上限约束
 
 ## 安装
 

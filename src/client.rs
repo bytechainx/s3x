@@ -14,13 +14,17 @@
 //!   [`build_delete_objects_body`](crate::build_delete_objects_body) /
 //!   [`parse_delete_objects`](crate::parse_delete_objects)）：S3 要求
 //!   该接口附带 `Content-MD5`（或等价校验和头），本 crate 不引入摘要依赖。
-//! - `max_in_flight` 覆盖「请求发出 → 响应头返回」区间；[`S3Client::get_object`]
-//!   返回的字节流在响应头之后继续读取，不再占用并发额度。
+//! - `max_in_flight` 覆盖**整个请求生命周期**：并发许可由请求发起时取得，直到
+//!   响应处理完毕才释放。[`S3Client::get_object`] 返回的字节流会**继续持有**该许可
+//!   （见 [`guarded_body_stream`]），因此流未被消费完或未被丢弃之前，不会让出并发额度。
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures_core::Stream;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::StatusCode;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -281,6 +285,9 @@ impl S3Client {
     }
 
     /// 下载对象：返回元数据与字节流（内容按需读取）。
+    ///
+    /// 返回的流会**持有**一个 `max_in_flight` 并发许可，直到流被消费完或丢弃；
+    /// 因此调用方应及时消费或丢弃该流，否则会占着并发额度不放。
     pub async fn get_object(
         &self,
         key: &ObjectKey,
@@ -295,17 +302,14 @@ impl S3Client {
         };
         let spec =
             RequestSpec::new("GET", &self.inner.config, Some(key.as_str())).with_headers(headers);
-        let response = retry::with_retry(&self.inner.retry, "get_object", || {
+        // 许可在重试闭包内逐次获取/释放；成功后交由响应体流持有。
+        let (permit, response) = retry::with_retry(&self.inner.retry, "get_object", || {
             let spec = &spec;
-            async move { self.inner.send_checked(spec, None).await }
+            async move { self.inner.send_checked_holding_permit(spec, None).await }
         })
         .await?;
         let meta = object_meta_from_headers(key, response.headers());
-        let stream: ByteStream = Box::pin(futures_util::StreamExt::map(
-            response.bytes_stream(),
-            |chunk| chunk.map_err(std::io::Error::other),
-        ));
-        Ok((meta, stream))
+        Ok((meta, guarded_body_stream(permit, response)))
     }
 
     /// 下载对象并读完全部字节。
@@ -487,6 +491,10 @@ impl Inner {
     /// [`retry::with_retry`] 只能看到传输层错误，`max_retries` 对
     /// `5xx` / `429` / `SlowDown` 等 HTTP 层瞬时故障完全失效。
     /// `Ok` 返回值保证状态码为 2xx。
+    ///
+    /// 并发许可在本方法返回时释放——即只覆盖「请求发出 → 响应头返回」。需要读取
+    /// 响应体的调用方请改用 [`Inner::send_checked_holding_permit`]，否则
+    /// `max_in_flight` 约束不到响应体传输阶段。
     async fn send_checked(
         &self,
         spec: &RequestSpec,
@@ -501,6 +509,81 @@ impl Inner {
         let response_body = read_body_prefix(response).await;
         Err(map_http_error(status, &response_body))
     }
+
+    /// 与 [`Inner::send_checked`] 相同，但把并发许可一并交出。
+    ///
+    /// 供**下载**路径使用：调用方必须把许可附着到响应体流上（见
+    /// [`guarded_body_stream`]），使 `max_in_flight` 覆盖响应体传输阶段。
+    /// 若拿到许可后不绑定而让它立即析构，就等于退回「只约束请求发起」的旧行为。
+    async fn send_checked_holding_permit(
+        &self,
+        spec: &RequestSpec,
+        body: Option<Bytes>,
+    ) -> S3Result<(OwnedSemaphorePermit, reqwest::Response)> {
+        let permit = self.acquire().await?;
+        let response = self
+            .build_request(spec, body)?
+            .send()
+            .await
+            .map_err(|error| map_transport_error(&error))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok((permit, response));
+        }
+        let response_body = read_body_prefix(response).await;
+        Err(map_http_error(status, &response_body))
+    }
+}
+
+/// 持有并发许可的响应体流。
+///
+/// `max_in_flight` 的语义是「同时在途的请求上限」。响应体的读取发生在
+/// [`S3Client::get_object`] 返回**之后**，若不把许可带到这里，慢速大对象下载可以
+/// 无限并发，并发上限便形同虚设。因此许可随本结构体保存：
+///
+/// - 读到流结束（`None`）时**立即**归还额度，不必等调用方 drop；
+/// - 调用方提前 drop 时随析构归还；
+/// - 结束后再被 poll 仍返回 `None`，**不 panic**。
+///
+/// 最后一点是刻意不用 [`futures_util::stream::unfold`] 的原因：后者在返回过
+/// `None` 之后再被 poll 会直接 panic，那等于给公开的下载流引入一条可被误用触发的
+/// panic 路径。
+struct GuardedBodyStream {
+    /// 响应体流；读到结束后置 `None`。
+    body: Option<futures_util::stream::BoxStream<'static, Result<Bytes, reqwest::Error>>>,
+    /// 并发许可；置 `None` 即归还额度。
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+impl Stream for GuardedBodyStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let Some(body) = this.body.as_mut() else {
+            // 已结束：保持返回 `None`，可安全重复 poll。
+            return Poll::Ready(None);
+        };
+        match body.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(Ok(chunk))) => Poll::Ready(Some(Ok(chunk))),
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(std::io::Error::other(error)))),
+            Poll::Ready(None) => {
+                this.body = None;
+                // 传输结束即归还并发额度，无需等待流被 drop。
+                this.permit = None;
+                Poll::Ready(None)
+            }
+        }
+    }
+}
+
+/// 把并发许可附着到响应体流上（见 [`GuardedBodyStream`]）。
+fn guarded_body_stream(permit: OwnedSemaphorePermit, response: reqwest::Response) -> ByteStream {
+    Box::pin(GuardedBodyStream {
+        body: Some(Box::pin(response.bytes_stream())),
+        permit: Some(permit),
+    })
 }
 
 /// 构造 `reqwest::Client`（超时、`User-Agent` 与连接池）。

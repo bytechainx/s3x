@@ -111,6 +111,9 @@ pub struct S3Config {
     /// 最大尝试次数（含首次请求，`1` 表示不重试），上限 [`HARD_MAX_RETRIES`]。
     pub max_retries: u32,
     /// 全局并发上限（信号量许可数，`1..=`[`HARD_MAX_IN_FLIGHT`]）。
+    ///
+    /// 许可覆盖**整个请求生命周期**，包括 [`crate::S3Client::get_object`] 返回的
+    /// 字节流的后续读取：流被消费完或丢弃时才释放额度。
     pub max_in_flight: usize,
     /// `User-Agent` 头。
     pub user_agent: String,
