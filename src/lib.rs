@@ -19,6 +19,8 @@
 //! - **并发与重试**：[`S3Config::max_in_flight`] 以 `tokio::sync::Semaphore` 背压；
 //!   失败按 [`RetryConfig`] 指数退避 + 抖动重试（可加总 deadline），
 //!   [`S3Error::is_retryable`] 区分瞬时故障与永久故障。
+//!   **注意**：[`S3Client::put_object_stream`] 不走重试路径——流式请求体无法回放，
+//!   由调用方自行处理重试。详见该方法的文档中的 `# 不重试` 小节。
 //! - **错误安全**：错误消息只含 HTTP 状态码、S3 错误码与截断后的服务端消息
 //!   （≤ 512 字符，响应前缀 ≤ 4 KiB）；secret access key / session token 永不进入
 //!   错误消息、`Debug` 输出或 URL。
