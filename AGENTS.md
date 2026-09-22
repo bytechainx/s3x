@@ -17,8 +17,18 @@ AWS S3 及 S3 兼容对象存储适配器：手写 SigV4 实现（不依赖 aws-
 ```text
 src/
 ├── lib.rs      # 入口：模块声明 + 受控 re-export + 公开 API 面测试
-├── client.rs   # S3Client 数据面：put/get/delete/head/list_objects_v2 + ping/health_check
-├── config.rs   # S3Config 配置结构体 + builder + env/toml 加载 + 校验 + 双寻址
+├── client.rs   # S3Client 门面：类型定义（S3Client / Inner / RequestSpec / S3Health）、
+│               # HTTP 层辅助（错误映射、响应流包装、header 读取）与内联测试
+├── client/
+│   ├── api.rs   # 数据面实现：impl S3Client（new/connect/ping/health_check/put/get/delete/head/list）
+│   └── inner.rs # 共享状态的请求构造与发送：impl Inner
+├── config.rs   # S3Config 门面：ENV_*/DEFAULT_*/HARD_MAX_* 常量、定义与 Default/Debug、
+│               # from_env/from_toml/validate/builder/apply_env_overrides、内联测试
+├── config/
+│   ├── builder.rs  # S3ConfigBuilder（链式覆盖）
+│   ├── endpoint.rs # 端点与寻址：effective_endpoint / *_url / endpoint_parts / aws_endpoint_for_region
+│   ├── env.rs      # 环境变量读取辅助
+│   └── validate.rs # 字段校验：endpoint 拆分、region 与 bucket 规则
 ├── error.rs    # S3Error / S3Result
 ├── presign.rs  # presign_get / presign_put / presign_url 预签名 URL
 ├── retry.rs    # RetryConfig / with_retry / backoff_delay 重试策略
