@@ -139,8 +139,18 @@ impl S3Client {
     /// [`S3Config::allow_unsigned_payload_over_http`](crate::S3Config::allow_unsigned_payload_over_http)
     /// 或环境变量 `FOUNDATIONX_S3X_ALLOW_UNSIGNED_PAYLOAD_OVER_HTTP` 显式放行。
     ///
-    /// 请求体无法回放，**不做重试**。`content_length` 为 `Some` 时显式设置
-    /// `Content-Length`（否则使用分块传输编码）。
+    /// # 不重试
+    ///
+    /// **此方法不做自动重试**，与 [`put_object`](Self::put_object) /
+    /// [`get_object`](Self::get_object) 等走 [`retry::with_retry`] 的方法不同。
+    /// 原因：流式请求体（`ByteStream`）只能消费一次，无法回放以生成新的请求体；
+    /// 在网络瞬断等可重试场景下，重试器无法重新构造已被部分消费的流。
+    ///
+    /// 调用方如需重试，须自行处理：
+    /// - 确保流可重新构造（如从 `Vec<u8>` 或可 seek 的文件重新创建）；
+    /// - 在每次重试时用新的 `ByteStream` 调用本方法。
+    ///
+    /// `content_length` 为 `Some` 时显式设置 `Content-Length`（否则使用分块传输编码）。
     pub async fn put_object_stream(
         &self,
         key: &ObjectKey,
