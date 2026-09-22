@@ -1,6 +1,6 @@
 [package]
 name = "s3x"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Async AWS S3 and S3-compatible object storage adapter with hand-rolled Signature Version 4 signing"

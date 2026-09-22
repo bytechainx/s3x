@@ -8,12 +8,32 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-22
+
 ### 新增
 
 - 三类测试（特性 002）：`tests/tdd_contracts.rs`（逐公开入口的行为契约与变异探测红绿，
   数据面入口由本地一次性 TCP 服务驱动）、`tests/sdd_spec.rs`（与 `docs/标准.md` 章节 1:1
   的规格断言）、`tests/aidd_boundary.rs`（对象键 / 桶名 / 预签名极值 / 凭据脱敏 /
   错误截断 / 重试分类等对抗用例）；均为离线用例，不依赖真实对象存储，也不使用 `#[ignore]`。
+
+### 变更
+
+- **内部结构改写（公开 API 与可观察契约均不变）**：按 `docs/module-rules.md` §5.5 的手法，把
+  `src/client.rs` 与 `src/config.rs` 两处超长门面下沉为子模块 ——
+  客户端数据面 → `src/client/api.rs`（`impl S3Client`）、共享状态的请求构造与发送 →
+  `src/client/inner.rs`（`impl Inner`）；配置的门面方法与常量留在 `src/config.rs`，
+  另建 `src/config/builder.rs`（`S3ConfigBuilder`）、`src/config/endpoint.rs`（端点与寻址）、
+  `src/config/env.rs`（环境变量读取）、`src/config/validate.rs`（字段校验）。
+  两个门面只保留模块文档、类型定义与**原有内联测试**。
+  `S3ConfigBuilder` / `aws_endpoint_for_region` 经门面 `pub use` 导出，公开路径不变；
+  其余为 `pub(super)` 的 crate 内部可见性调整（`Inner` 的四个方法、三个 `validate_*` 与
+  三个 `env_*`），不涉及任何公开项。`src/client.rs` 生产段 **733 → 313**、
+  `src/config.rs` 生产段 **698 → 374**。
+  动机：`module-rules` 是元仓库必需检查，且它审计各仓**默认分支**，故当两个门面距
+  `MR-STRUCT-007` 的 800 行 ERROR 阈值只剩 67 / 102 行时，任一仓的任意改动都可能卡住
+  元仓库的全部 PR。属**纯搬移**（行多重集比对确认零代码行丢失），全部 174 项测试与
+  doctest 结果不变。
 
 ## [0.1.0] - 2026-09-21
 

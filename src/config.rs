@@ -11,13 +11,21 @@
 //! 会直接拒绝这两个键），只能通过环境变量或 [`S3ConfigBuilder`] 注入。
 
 use std::fmt;
-use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::error::{S3Error, S3Result};
-use crate::sign::{self, S3_SERVICE};
-use crate::types::ObjectKey;
+
+mod builder;
+mod endpoint;
+mod env;
+mod validate;
+
+pub use builder::S3ConfigBuilder;
+pub use endpoint::aws_endpoint_for_region;
+
+use self::env::{env_bool, env_parsed, env_trimmed};
+use self::validate::{validate_bucket, validate_region};
 
 /// 环境变量前缀。
 pub const ENV_PREFIX: &str = "FOUNDATIONX_S3X_";
@@ -316,77 +324,9 @@ impl S3Config {
     pub fn builder() -> S3ConfigBuilder {
         S3ConfigBuilder::new()
     }
+}
 
-    /// 实际使用的 endpoint。
-    ///
-    /// - 未配置 `endpoint` 时返回 AWS 官方端点
-    ///   `https://s3.{region}.amazonaws.com`；
-    /// - 否则返回自定义 endpoint（去掉尾部 `/`）。
-    #[must_use]
-    pub fn effective_endpoint(&self) -> String {
-        match self.endpoint.as_deref().map(str::trim) {
-            Some(endpoint) if !endpoint.is_empty() => endpoint.trim_end_matches('/').to_owned(),
-            _ => format!("https://s3.{}.amazonaws.com", self.region),
-        }
-    }
-
-    /// 当前生效的 endpoint 是否为**明文 HTTP**（非 TLS）。
-    ///
-    /// 用于判定「未签名载荷」是否处于**无任何完整性保护**的状态：`UNSIGNED-PAYLOAD`
-    /// 本身就不覆盖请求体，若再叠加明文传输，请求体在链路上可被篡改而签名依然有效。
-    /// endpoint 无法解析时返回 `false`（交由 [`S3Config::validate`] 报错）。
-    #[must_use]
-    pub fn endpoint_is_plain_http(&self) -> bool {
-        url::Url::parse(&self.effective_endpoint()).is_ok_and(|parsed| parsed.scheme() == "http")
-    }
-
-    /// 桶级请求的完整 URL（无查询串）。
-    #[must_use]
-    pub fn bucket_url(&self) -> String {
-        self.endpoint_parts(None).url
-    }
-
-    /// 对象级请求的完整 URL（无查询串）。
-    #[must_use]
-    pub fn object_url(&self, key: &ObjectKey) -> String {
-        self.endpoint_parts(Some(key.as_str())).url
-    }
-
-    /// SigV4 服务名（S3 固定为 [`S3_SERVICE`]）。
-    #[must_use]
-    pub fn service(&self) -> &'static str {
-        S3_SERVICE
-    }
-
-    /// 一次请求的寻址三元组：完整 URL、`Host` 头、规范化 URI。
-    pub(crate) fn endpoint_parts(&self, key: Option<&str>) -> EndpointParts {
-        let (scheme, authority) = split_endpoint(&self.effective_endpoint());
-        let encoded_key = key.map(|key| sign::percent_encode(key, false));
-        if self.force_path_style {
-            let mut canonical_uri = format!("/{}", self.bucket);
-            if let Some(key) = &encoded_key {
-                canonical_uri.push('/');
-                canonical_uri.push_str(key);
-            }
-            EndpointParts {
-                url: format!("{scheme}://{authority}{canonical_uri}"),
-                host: authority,
-                canonical_uri,
-            }
-        } else {
-            let host = format!("{}.{authority}", self.bucket);
-            let canonical_uri = match &encoded_key {
-                Some(key) => format!("/{key}"),
-                None => "/".to_owned(),
-            };
-            EndpointParts {
-                url: format!("{scheme}://{host}{canonical_uri}"),
-                host,
-                canonical_uri,
-            }
-        }
-    }
-
+impl S3Config {
     /// 从环境变量覆盖当前配置（env 值优先于结构体已有值）。
     fn apply_env_overrides(&mut self) -> S3Result<()> {
         if let Some(value) = env_trimmed(ENV_ENDPOINT) {
@@ -432,273 +372,14 @@ impl S3Config {
     }
 }
 
-/// 寻址三元组（crate 内部使用）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EndpointParts {
-    /// 完整 URL（不含查询串）。
-    pub(crate) url: String,
-    /// `Host` 头取值（virtual-hosted 时含桶名前缀）。
-    pub(crate) host: String,
-    /// 参与签名的规范化 URI（已 URI 编码，S3 规则不做二次编码）。
-    pub(crate) canonical_uri: String,
-}
-
-/// [`S3Config`] 的链式构建器。
-#[derive(Clone, Debug, Default)]
-pub struct S3ConfigBuilder {
-    inner: S3Config,
-}
-
-impl S3ConfigBuilder {
-    /// 从默认值开始。
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            inner: S3Config::default(),
-        }
-    }
-
-    /// 从已有配置开始（便于在既有配置上覆盖少量字段）。
-    #[must_use]
-    pub fn from_config(config: S3Config) -> Self {
-        Self { inner: config }
-    }
-
-    /// 设置自定义 endpoint（`None` 表示 AWS 官方端点）。
-    #[must_use]
-    pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.inner.endpoint = Some(endpoint.into());
-        self
-    }
-
-    /// 清除自定义 endpoint，回退到 AWS 官方端点。
-    #[must_use]
-    pub fn aws_endpoint(mut self) -> Self {
-        self.inner.endpoint = None;
-        self
-    }
-
-    /// 设置区域。
-    #[must_use]
-    pub fn region(mut self, region: impl Into<String>) -> Self {
-        self.inner.region = region.into();
-        self
-    }
-
-    /// 设置存储桶名。
-    #[must_use]
-    pub fn bucket(mut self, bucket: impl Into<String>) -> Self {
-        self.inner.bucket = bucket.into();
-        self
-    }
-
-    /// 设置 Access Key ID。
-    #[must_use]
-    pub fn access_key_id(mut self, access_key_id: impl Into<String>) -> Self {
-        self.inner.access_key_id = access_key_id.into();
-        self
-    }
-
-    /// 设置 Secret Access Key（不会出现在 `Debug` 输出中）。
-    #[must_use]
-    pub fn access_key_secret(mut self, access_key_secret: impl Into<String>) -> Self {
-        self.inner.access_key_secret = access_key_secret.into();
-        self
-    }
-
-    /// 设置 session token（不会出现在 `Debug` 输出中）。
-    #[must_use]
-    pub fn session_token(mut self, session_token: impl Into<String>) -> Self {
-        self.inner.session_token = Some(session_token.into());
-        self
-    }
-
-    /// 设置是否强制 path-style 寻址。
-    #[must_use]
-    pub fn force_path_style(mut self, force_path_style: bool) -> Self {
-        self.inner.force_path_style = force_path_style;
-        self
-    }
-
-    /// 允许在明文 HTTP endpoint 上使用 `UNSIGNED-PAYLOAD`（默认拒绝）。
-    ///
-    /// 仅在确认「请求体完整性不受保护」可接受时开启（例如本地 MinIO 调试）。
-    pub fn allow_unsigned_payload_over_http(mut self, allow: bool) -> Self {
-        self.inner.allow_unsigned_payload_over_http = allow;
-        self
-    }
-
-    /// 设置请求超时。
-    #[must_use]
-    pub fn request_timeout(mut self, timeout: Duration) -> Self {
-        self.inner.request_timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-        self
-    }
-
-    /// 设置连接超时（`None` 表示不单独限制）。
-    #[must_use]
-    pub fn connect_timeout(mut self, timeout: Option<Duration>) -> Self {
-        self.inner.connect_timeout_ms = timeout
-            .map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or(0);
-        self
-    }
-
-    /// 设置最大尝试次数（含首次请求）。
-    #[must_use]
-    pub fn max_retries(mut self, max_retries: u32) -> Self {
-        self.inner.max_retries = max_retries;
-        self
-    }
-
-    /// 设置全局并发上限。
-    #[must_use]
-    pub fn max_in_flight(mut self, max_in_flight: usize) -> Self {
-        self.inner.max_in_flight = max_in_flight;
-        self
-    }
-
-    /// 设置 `User-Agent`。
-    #[must_use]
-    pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
-        self.inner.user_agent = user_agent.into();
-        self
-    }
-
-    /// 校验并产出配置。
-    pub fn build(self) -> S3Result<S3Config> {
-        self.inner.validate()?;
-        Ok(self.inner)
-    }
-}
-
-/// 拆分 `scheme://authority`；无协议前缀时兜底为 `https`（`validate` 已拒绝该形态）。
-fn split_endpoint(endpoint: &str) -> (String, String) {
-    match url::Url::parse(endpoint) {
-        Ok(parsed) => {
-            let scheme = parsed.scheme().to_owned();
-            let host = parsed.host_str().unwrap_or_default().to_owned();
-            let authority = match parsed.port() {
-                Some(port) => format!("{host}:{port}"),
-                None => host,
-            };
-            (scheme, authority)
-        }
-        Err(_) => match endpoint.split_once("://") {
-            Some((scheme, rest)) => (scheme.to_owned(), rest.trim_end_matches('/').to_owned()),
-            None => ("https".to_owned(), endpoint.to_owned()),
-        },
-    }
-}
-
-/// 校验区域名：小写字母/数字/连字符，不以连字符开头或结尾，长度 `1..=64`。
-fn validate_region(region: &str) -> S3Result<()> {
-    let region = region.trim();
-    let valid = !region.is_empty()
-        && region.len() <= 64
-        && !region.starts_with('-')
-        && !region.ends_with('-')
-        && region
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    if valid {
-        Ok(())
-    } else {
-        Err(S3Error::Config(
-            "region 只允许小写字母、数字与连字符（不以连字符开头/结尾，长度 1..=64）".to_owned(),
-        ))
-    }
-}
-
-/// 校验存储桶名（AWS 通用存储桶命名规则）。
-fn validate_bucket(bucket: &str) -> S3Result<()> {
-    let len = bucket.len();
-    if !(MIN_BUCKET_NAME_LEN..=MAX_BUCKET_NAME_LEN).contains(&len) {
-        return Err(S3Error::Config(format!(
-            "bucket 长度必须落在 {MIN_BUCKET_NAME_LEN}..={MAX_BUCKET_NAME_LEN} 之间"
-        )));
-    }
-    let first = bucket.chars().next().unwrap_or_default();
-    let last = bucket.chars().next_back().unwrap_or_default();
-    if !(first.is_ascii_lowercase() || first.is_ascii_digit())
-        || !(last.is_ascii_lowercase() || last.is_ascii_digit())
-    {
-        return Err(S3Error::Config(
-            "bucket 必须以小写字母或数字开头与结尾".to_owned(),
-        ));
-    }
-    if !bucket
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.'))
-    {
-        return Err(S3Error::Config(
-            "bucket 只允许小写字母、数字、连字符与点号".to_owned(),
-        ));
-    }
-    if bucket.contains("..") {
-        return Err(S3Error::Config("bucket 不能包含连续的 `.`".to_owned()));
-    }
-    if bucket.parse::<std::net::Ipv4Addr>().is_ok() {
-        return Err(S3Error::Config("bucket 不能是 IPv4 地址形式".to_owned()));
-    }
-    Ok(())
-}
-
-/// 读取 trim 后非空的环境变量。
-fn env_trimmed(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-}
-
-/// 读取并解析环境变量；解析失败只报告变量名，不回显取值。
-fn env_parsed<T>(name: &str) -> S3Result<Option<T>>
-where
-    T: std::str::FromStr,
-{
-    match std::env::var(name) {
-        Ok(value) => value
-            .trim()
-            .parse::<T>()
-            .map(Some)
-            .map_err(|_| S3Error::Config(format!("环境变量 {name} 取值非法"))),
-        Err(_) => Ok(None),
-    }
-}
-
-/// 读取布尔型环境变量，兼容 `1/0`、`true/false`、`yes/no`、`on/off`。
-fn env_bool(name: &str) -> S3Result<Option<bool>> {
-    let Some(value) = env_trimmed(name) else {
-        return Ok(None);
-    };
-    match value.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(Some(true)),
-        "0" | "false" | "no" | "off" => Ok(Some(false)),
-        _ => Err(S3Error::Config(format!("环境变量 {name} 取值非法"))),
-    }
-}
-
-/// 缺省 endpoint 的 AWS 官方形态（供文档与测试引用）。
-///
-/// # Examples
-///
-/// ```
-/// use s3x::aws_endpoint_for_region;
-///
-/// assert_eq!(
-///     aws_endpoint_for_region("ap-east-1"),
-///     "https://s3.ap-east-1.amazonaws.com"
-/// );
-/// ```
-#[must_use]
-pub fn aws_endpoint_for_region(region: &str) -> String {
-    format!("https://s3.{region}.amazonaws.com")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 仅测试用到的 crate 项与 std 导入写在测试模块内（避免非测试构建 unused import）。
+    use std::time::Duration;
+
+    use crate::sign::S3_SERVICE;
+    use crate::types::ObjectKey;
 
     /// 环境变量是进程级共享状态；涉及 env 的用例必须串行，避免并行测试互相干扰。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
