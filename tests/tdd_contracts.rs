@@ -6,7 +6,7 @@
 )]
 //! TDD 行为契约（特性 002）。
 //!
-//! 下表逐条登记 `specs/002-*/contracts/public-api-contract.md` 中 s3x 的全部入口。
+//! 下表逐条登记 `specs/features/002-*/contracts/public-api-contract.md` 中 s3x 的全部入口。
 //! 公开 API 已存在，先写断言只能得到假断言，因此每条入口都在 `/tmp` 的变异副本上
 //! 观测过红、再在本树观测绿；变异描述与复现命令见 PR 描述。
 //!
