@@ -151,6 +151,11 @@ impl S3Client {
     /// - 在每次重试时用新的 `ByteStream` 调用本方法。
     ///
     /// `content_length` 为 `Some` 时显式设置 `Content-Length`（否则使用分块传输编码）。
+    /// 返回的 [`ObjectMeta::size`](crate::ObjectMeta) 在长度为 `None` 时为 `0`，表示「未提供长度」而不是空对象。
+    ///
+    /// # 警告
+    ///
+    /// 不要假设 `S3Client` 的所有数据面方法都会自动重试。本方法是单次发送。
     pub async fn put_object_stream(
         &self,
         key: &ObjectKey,
