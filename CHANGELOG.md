@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### 变更
+
+- `docs/标准.md` 页眉版本与 package `0.1.1` 对齐（此前仍写 v0.1.0）。
+- `put_object_stream` rustdoc 补「# 警告」：不自动重试；`content_length = None` 时返回 `size = 0` 表示未知长度。
+
 ## [0.1.1] - 2026-09-22
 
 ### 新增
