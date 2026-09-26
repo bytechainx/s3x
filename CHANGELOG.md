@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### 新增
+
+- `tests/e2e_s3.rs`：离线 HTTP 桩上覆盖 `public-api --simplified` 全公开面（门禁 `e2e_s3`）。**不是**真 AWS T3/T4。
+- `docs/标准.md` §5 钉死六层测试（TDD / SDD / 单元 / 集成 / 基准 / E2E）；`tests/required_tiers.rs` 与 SDD `assert_acceptance` 共同验收。
+
 ### 变更
 
 - `docs/标准.md` 页眉版本与 package `0.1.1` 对齐（此前仍写 v0.1.0）。

@@ -306,6 +306,16 @@ fn assert_acceptance() {
         "ObjectKey",
         "重试分类",
         "凭据脱敏",
+        "TDD",
+        "SDD",
+        "单元测试",
+        "集成测试",
+        "基准测试",
+        "E2E",
+        "tests/tdd_contracts.rs",
+        "tests/sdd_spec.rs",
+        "tests/e2e_s3.rs",
+        "benches/hot_path.rs",
     ] {
         assert!(
             standard.contains(coverage),
