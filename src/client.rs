@@ -194,6 +194,8 @@ fn guarded_body_stream(permit: OwnedSemaphorePermit, response: reqwest::Response
 /// 构造 `reqwest::Client`（超时、`User-Agent` 与连接池）。
 fn build_http_client(config: &S3Config) -> S3Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
+        // 签名与批准目标绑定；重定向必须交由调用方重新审定。
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(config.user_agent.clone())
         .timeout(Duration::from_millis(config.request_timeout_ms));
     if config.connect_timeout_ms > 0 {
@@ -314,6 +316,33 @@ fn with_body_prefix(error: S3Error, body: &str) -> S3Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn http_client_does_not_follow_redirects() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("本机监听");
+        let address = listener.local_addr().expect("本机地址");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("接受连接");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(request.len() < 4096, "请求头必须有界");
+                request.push(stream.read_u8().await.expect("读取请求"));
+            }
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /other-key\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("返回重定向");
+        });
+        let http = build_http_client(&config("examplebucket")).expect("客户端");
+        let response = http
+            .get(format!("http://{address}/original-key"))
+            .send()
+            .await
+            .expect("收到原始响应");
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        assert_eq!(response.url().path(), "/original-key");
+        server.await.expect("服务完成");
+    }
+
     // `HeaderValue` 仅测试用到，故导入写在测试模块内（避免非测试构建 unused import）。
     use crate::types::{DownloadOptions, UploadOptions};
     use reqwest::header::HeaderValue;
