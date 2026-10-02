@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-02
+
+### 修正
+
+- 移除 `ByteStream` 构造函数重复的 `must_use` 属性，保留返回类型的使用约束。
+
 ### 新增
 
 - `tests/e2e_s3.rs`：离线 HTTP 桩上覆盖 `public-api --simplified` 全公开面（门禁 `e2e_s3`）。**不是**真 AWS T3/T4。
