@@ -234,7 +234,6 @@ impl DownloadOptions {
 pub type ByteStream = futures_util::stream::BoxStream<'static, Result<Bytes, std::io::Error>>;
 
 /// 把一段内存数据包装成单元素字节流。
-#[must_use]
 pub fn byte_stream_from_bytes(data: Bytes) -> ByteStream {
     Box::pin(futures_util::stream::once(async move { Ok(data) }))
 }
