@@ -4,12 +4,12 @@
     clippy::panic,
     clippy::unreachable
 )]
-//! live 真连云（s3x）：需先 `source /home/zone/workspace/sre/secrets/env/s3x.env`。
+//! live 真连云（s3x）：需先 `source /home/workspace/bytechainx/.config/s3x.env`。
 //!
 //! 全部用例 `#[ignore]`，默认不跑（CI 行为不变）。显式运行：
 //!
 //! ```bash
-//! set -a; source /home/zone/workspace/sre/secrets/env/s3x.env; set +a
+//! set -a; source /home/workspace/bytechainx/.config/s3x.env; set +a
 //! CARGO_TARGET_DIR=/home/workspace/bytechainx/.cargo/target \
 //!   cargo test --test live_s3 -- --ignored --test-threads=1
 //! ```
