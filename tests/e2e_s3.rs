@@ -180,7 +180,6 @@ const E2E_MANIFEST: &[(&str, &str)] = &[
     ("field", "SignRequest::region"),
     ("field", "SignRequest::secret_access_key"),
     ("field", "SignRequest::service"),
-    ("fn", "SignRequest"),
     ("type", "Signature"),
     ("field", "Signature::authorization"),
     ("field", "Signature::canonical_request"),
@@ -821,7 +820,6 @@ fn phase_sign_presign_xml(config: &S3Config, key: &ObjectKey) {
     assert!(aws_endpoint_for_region("us-east-1").contains("amazonaws.com"));
 
     hit("type", "SignRequest");
-    hit("fn", "SignRequest");
     let req = SignRequest {
         method: "GET",
         canonical_uri: "/",

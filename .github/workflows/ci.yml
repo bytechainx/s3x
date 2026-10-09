@@ -4,8 +4,8 @@ name: CI
 #   cargo fmt --check / cargo clippy --all-targets -- -D warnings / cargo test
 #
 # 说明：
-# - 不使用 `--locked`：本仓库是库，`Cargo.lock` 不入库（由下游决定版本），
-#   CI 每次按 Cargo.toml 解析依赖，这与发布时的行为一致。
+# - 使用 `--locked` 的等价语义：本仓库已入库 `Cargo.lock`（组织基线 R-SEC-009 /
+#   R-DEP-005：供应链可重现），CI 按锁文件解析依赖。
 # - `cargo test` 同时运行单元测试、集成测试与文档测试（doctest）。
 # - 不依赖任何外部服务：全部用例离线运行。
 # - 不设全局 `RUSTFLAGS`：`-D warnings` 只由 clippy 那一行的 `--` 参数表达，
@@ -41,3 +41,31 @@ jobs:
 
       - name: cargo test
         run: cargo test
+
+  supply-chain:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+
+  msrv:
+    name: msrv 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 MSRV 工具链
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check（按声明的 rust-version）
+        working-directory: .
+        run: cargo check --all-features
