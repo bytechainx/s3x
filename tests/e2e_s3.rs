@@ -189,10 +189,14 @@ const E2E_MANIFEST: &[(&str, &str)] = &[
     ("field", "Signature::string_to_sign"),
     ("type", "UploadOptions"),
     ("field", "UploadOptions::content_type"),
+    ("field", "UploadOptions::if_match"),
+    ("field", "UploadOptions::if_none_match"),
     ("field", "UploadOptions::metadata"),
     ("field", "UploadOptions::storage_class"),
     ("fn", "UploadOptions::push_metadata"),
     ("fn", "UploadOptions::with_content_type"),
+    ("fn", "UploadOptions::with_if_match"),
+    ("fn", "UploadOptions::with_if_none_match"),
     ("fn", "UploadOptions::with_metadata"),
     ("fn", "UploadOptions::with_storage_class"),
     ("const", "ALGORITHM"),
@@ -531,22 +535,32 @@ fn phase_value_types() {
     hit("fn", "UploadOptions::with_metadata");
     hit("fn", "UploadOptions::push_metadata");
     hit("fn", "UploadOptions::with_storage_class");
+    hit("fn", "UploadOptions::with_if_none_match");
+    hit("fn", "UploadOptions::with_if_match");
     let upload = UploadOptions::default()
         .with_content_type("text/csv")
         .with_metadata(vec![("a".into(), "1".into())])
         .push_metadata("b", "2")
-        .with_storage_class("STANDARD");
+        .with_storage_class("STANDARD")
+        .with_if_none_match("*");
     let UploadOptions {
         content_type: up_ct,
         metadata,
         storage_class,
+        if_none_match,
+        if_match,
     } = upload;
     hit("field", "UploadOptions::content_type");
     hit("field", "UploadOptions::metadata");
     hit("field", "UploadOptions::storage_class");
+    hit("field", "UploadOptions::if_none_match");
+    hit("field", "UploadOptions::if_match");
     assert_eq!(up_ct.as_deref(), Some("text/csv"));
     assert_eq!(metadata.as_ref().map(Vec::len), Some(2));
     assert_eq!(storage_class.as_deref(), Some("STANDARD"));
+    assert_eq!(if_none_match.as_deref(), Some("*"));
+    assert!(if_match.is_none());
+    let _ = UploadOptions::default().with_if_match("\"etag\"");
 
     hit("type", "DownloadOptions");
     hit("fn", "DownloadOptions::with_range");
