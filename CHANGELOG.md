@@ -14,6 +14,10 @@
   `If-None-Match` / `If-Match`。两值同时设置或取值为空/含控制字符时 fail-closed。
   HTTP 412 仍按现有规则不可重试。
 
+### 修正
+
+- `Cargo.lock` 将 `rustls` 升到 `0.23.46`，关闭 `RUSTSEC-2026-0348` / `0349`。
+
 ### 破坏性变更
 
 - MSRV 由 `1.85` 上调至 `1.88`：依赖链中的 `icu_* 2.3.0`（经 `idna_adapter`）要求
