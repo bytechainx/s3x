@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+### 新增
+
+- `UploadOptions` 增加 `if_none_match` / `if_match`，经 `put_object` 发出
+  `If-None-Match` / `If-Match`。两值同时设置或取值为空/含控制字符时 fail-closed。
+  HTTP 412 仍按现有规则不可重试。
+
 ### 破坏性变更
 
 - MSRV 由 `1.85` 上调至 `1.88`：依赖链中的 `icu_* 2.3.0`（经 `idna_adapter`）要求

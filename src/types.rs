@@ -143,6 +143,10 @@ pub struct UploadOptions {
     pub metadata: Option<Vec<(String, String)>>,
     /// 存储类别，写入 `x-amz-storage-class` 头（如 `STANDARD`、`STANDARD_IA`）。
     pub storage_class: Option<String>,
+    /// 条件写：`If-None-Match`（常见取值 `*`，键已存在则 412）。
+    pub if_none_match: Option<String>,
+    /// 条件写：`If-Match`（ETag 未变才写，否则 412）。
+    pub if_match: Option<String>,
 }
 
 impl UploadOptions {
@@ -176,6 +180,20 @@ impl UploadOptions {
         self
     }
 
+    /// 设置 `If-None-Match`（与 `if_match` 互斥）。
+    #[must_use]
+    pub fn with_if_none_match(mut self, value: impl Into<String>) -> Self {
+        self.if_none_match = Some(value.into());
+        self
+    }
+
+    /// 设置 `If-Match`（与 `if_none_match` 互斥）。
+    #[must_use]
+    pub fn with_if_match(mut self, value: impl Into<String>) -> Self {
+        self.if_match = Some(value.into());
+        self
+    }
+
     /// 归一化为 `x-amz-meta-*` 之外的显式请求头。
     ///
     /// 元数据键名只允许 ASCII 字母、数字与 `-`，值不允许控制字符：两个位置都
@@ -187,6 +205,20 @@ impl UploadOptions {
         }
         if let Some(storage_class) = &self.storage_class {
             headers.push(("x-amz-storage-class".to_owned(), storage_class.clone()));
+        }
+        if self.if_none_match.is_some() && self.if_match.is_some() {
+            return Err(S3Error::Config(
+                "If-None-Match 与 If-Match 不能同时设置".to_owned(),
+            ));
+        }
+        if let Some(value) = &self.if_none_match {
+            headers.push((
+                "if-none-match".to_owned(),
+                precondition_header_value(value)?,
+            ));
+        }
+        if let Some(value) = &self.if_match {
+            headers.push(("if-match".to_owned(), precondition_header_value(value)?));
         }
         for (name, value) in self.metadata.iter().flatten() {
             if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
@@ -203,6 +235,16 @@ impl UploadOptions {
         }
         Ok(headers)
     }
+}
+
+fn precondition_header_value(value: &str) -> S3Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+        return Err(S3Error::Config(
+            "条件写头取值不能为空或含控制字符".to_owned(),
+        ));
+    }
+    Ok(trimmed.to_owned())
 }
 
 /// 下载选项。
@@ -314,6 +356,31 @@ mod tests {
         assert!(bad_key.additional_headers().is_err());
         let bad_value = UploadOptions::default().push_metadata("ok", "a\r\nb");
         assert!(bad_value.additional_headers().is_err());
+
+        let create = UploadOptions::default().with_if_none_match("*");
+        assert_eq!(
+            create.additional_headers().expect("If-None-Match"),
+            vec![("if-none-match".to_owned(), "*".to_owned())]
+        );
+        let replace = UploadOptions::default().with_if_match("\"abc\"");
+        assert_eq!(
+            replace.additional_headers().expect("If-Match"),
+            vec![("if-match".to_owned(), "\"abc\"".to_owned())]
+        );
+        let both = UploadOptions::default()
+            .with_if_none_match("*")
+            .with_if_match("\"abc\"");
+        assert!(matches!(both.additional_headers(), Err(S3Error::Config(_))));
+        let empty = UploadOptions::default().with_if_none_match("   ");
+        assert!(matches!(
+            empty.additional_headers(),
+            Err(S3Error::Config(_))
+        ));
+        let control = UploadOptions::default().with_if_match("a\nb");
+        assert!(matches!(
+            control.additional_headers(),
+            Err(S3Error::Config(_))
+        ));
     }
 
     #[test]

@@ -100,7 +100,7 @@ client.ping().await?;
 | `S3Health` | 健康检查结果：`healthy` / `endpoint` / `bucket` / `latency_ms` |
 | `ObjectKey` | 已校验对象键（非空、无前导 `/`、无 `..`、无控制字符、UTF-8 ≤ 1024 字节） |
 | `ObjectMeta` | 元数据：`key` / `size` / `etag` / `last_modified` / `content_type` |
-| `UploadOptions` | 上传选项：`content_type` / `metadata`（`x-amz-meta-*`）/ `storage_class` |
+| `UploadOptions` | 上传选项：`content_type` / `metadata`（`x-amz-meta-*`）/ `storage_class` / `if_none_match` / `if_match` |
 | `DownloadOptions` | 下载选项：`range: Option<(u64, u64)>` |
 | `ByteStream` / `byte_stream_from_bytes` | 下载字节流（`Result<Bytes, std::io::Error>`）与内存流构造 |
 | `presign_get` / `presign_put` / `presign_url` / `PresignOptions` | 预签名 URL（返回 `S3Result<String>`；有效期自动收敛到 1..=604800 秒） |
